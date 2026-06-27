@@ -13,6 +13,7 @@ interface Footprint2DProps {
   markerX: number
   markerY: number
   markerSize: number
+  lang: 'TR' | 'EN'
   onChange: (x: number, y: number) => void
 }
 
@@ -22,11 +23,15 @@ export default function Footprint2D({
   markerX,
   markerY,
   markerSize,
+  lang,
   onChange,
 }: Footprint2DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const boundsRef = useRef({ minX: 0, maxX: 1, minY: 0, maxY: 1 })
   const draggingRef = useRef(false)
+
+  const label = lang === 'TR' ? 'Üstten Görünüm · Tıkla veya Sürükle' : 'Top View · Click or Drag'
+  const outOfBoundsText = lang === 'TR' ? '⚠ Sınır dışı' : '⚠ Out of bounds'
 
   // Dünya koordinatı → canvas piksel
   const worldToCanvas = useCallback(
@@ -106,11 +111,6 @@ export default function Footprint2D({
     ctx.fill()
     ctx.stroke()
 
-    // Mesh etiketi
-    ctx.fillStyle = '#555'
-    ctx.font = '11px monospace'
-    ctx.fillText(`${(bb.max.x - bb.min.x).toFixed(1)} mm`, tl.x + 4, br.y - 4)
-
     // ArUco marker kutusunu çiz
     const half = markerSize / 2
     const { minX, maxX, minY, maxY } = boundsRef.current
@@ -142,23 +142,9 @@ export default function Footprint2D({
     if (outOfBounds) {
       ctx.fillStyle = '#ef4444'
       ctx.font = 'bold 12px sans-serif'
-      ctx.fillText('⚠ Sınır dışı', 10, 22)
+      ctx.fillText(outOfBoundsText, 10, 22)
     }
-
-    // Ölçek çubuğu
-    const scaleLen = 10 // mm
-    const p1 = worldToCanvas(bb.min.x + 2, bb.min.y + 4, W, H)
-    const p2 = worldToCanvas(bb.min.x + 2 + scaleLen, bb.min.y + 4, W, H)
-    ctx.strokeStyle = '#888'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(p1.x, p1.y)
-    ctx.lineTo(p2.x, p1.y)
-    ctx.stroke()
-    ctx.fillStyle = '#888'
-    ctx.font = '10px monospace'
-    ctx.fillText(`${scaleLen}mm`, p1.x, p1.y - 3)
-  }, [geometry, rotation, markerX, markerY, markerSize, worldToCanvas])
+  }, [geometry, rotation, markerX, markerY, markerSize, outOfBoundsText, worldToCanvas])
 
   useEffect(() => {
     draw()
@@ -205,18 +191,18 @@ export default function Footprint2D({
   const onMouseUp = () => { draggingRef.current = false }
 
   return (
-    <div className="w-full rounded-xl overflow-hidden border border-neutral-800 relative" style={{ height: 220 }}>
-      <div className="absolute top-2 left-2 text-xs text-neutral-500 z-10 pointer-events-none">
-        Üstten Görünüm · Tıkla veya Sürükle
+    <div className="w-full">
+      <div className="text-xs text-neutral-600 mb-1 px-1">{label}</div>
+      <div className="w-full rounded-xl overflow-hidden border border-neutral-800" style={{ height: 200 }}>
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full cursor-crosshair"
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+          onMouseLeave={onMouseUp}
+        />
       </div>
-      <canvas
-        ref={canvasRef}
-        className="w-full h-full cursor-crosshair"
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
-      />
     </div>
   )
 }

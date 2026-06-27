@@ -1,6 +1,9 @@
 /**
  * Yerleşim kontrol paneli — tüm slider'lar.
+ * Oryantasyon (X/Y/Z dönüş) varsayılan gizli; "Gelişmiş Ayarlar" toggle ile açılır.
  */
+
+import { useState } from 'react'
 
 interface PlacementControlsProps {
   rotation: [number, number, number]
@@ -55,6 +58,8 @@ export default function PlacementControls({
   lang,
   onChange,
 }: PlacementControlsProps) {
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
   const t = lang === 'TR'
     ? {
         orientation: 'Oryantasyon',
@@ -63,6 +68,7 @@ export default function PlacementControls({
         posX: 'X Ekseni', posY: 'Y Ekseni',
         geometry: 'ArUco Geometrisi',
         size: 'Boyut', depth: 'Oyma Derinliği',
+        advanced: 'Gelişmiş Ayarlar',
       }
     : {
         orientation: 'Orientation',
@@ -71,6 +77,7 @@ export default function PlacementControls({
         posX: 'X Axis', posY: 'Y Axis',
         geometry: 'ArUco Geometry',
         size: 'Size', depth: 'Etch Depth',
+        advanced: 'Advanced Settings',
       }
 
   const xRange = bounds ? { min: bounds.minX, max: bounds.maxX } : { min: -100, max: 100 }
@@ -78,17 +85,30 @@ export default function PlacementControls({
 
   return (
     <div className="space-y-5">
-      {/* Oryantasyon */}
+      {/* Gelişmiş Ayarlar — Oryantasyon toggle */}
       <div>
-        <div className="text-xs text-neutral-500 uppercase tracking-wider mb-3">{t.orientation}</div>
-        <div className="space-y-3">
-          <Slider label={t.rotX} value={rotation[0]} min={0} max={360} step={1} unit="°"
-            onChange={(v) => onChange('rotX', v)} />
-          <Slider label={t.rotY} value={rotation[1]} min={0} max={360} step={1} unit="°"
-            onChange={(v) => onChange('rotY', v)} />
-          <Slider label={t.rotZ} value={rotation[2]} min={0} max={360} step={1} unit="°"
-            onChange={(v) => onChange('rotZ', v)} />
-        </div>
+        <button
+          onClick={() => setShowAdvanced(v => !v)}
+          className="flex items-center justify-between w-full group"
+        >
+          <span className="text-xs text-neutral-500 uppercase tracking-wider group-hover:text-neutral-300 transition-colors">
+            {t.advanced}
+          </span>
+          <span className="text-neutral-600 group-hover:text-neutral-400 transition-colors text-xs">
+            {showAdvanced ? '▲' : '▼'}
+          </span>
+        </button>
+        {showAdvanced && (
+          <div className="mt-3 space-y-3">
+            <div className="text-xs text-neutral-600 mb-2">{t.orientation}</div>
+            <Slider label={t.rotX} value={rotation[0]} min={0} max={360} step={1} unit="°"
+              onChange={(v) => onChange('rotX', v)} />
+            <Slider label={t.rotY} value={rotation[1]} min={0} max={360} step={1} unit="°"
+              onChange={(v) => onChange('rotY', v)} />
+            <Slider label={t.rotZ} value={rotation[2]} min={0} max={360} step={1} unit="°"
+              onChange={(v) => onChange('rotZ', v)} />
+          </div>
+        )}
       </div>
 
       <div className="border-t border-neutral-800" />

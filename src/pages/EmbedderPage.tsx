@@ -15,11 +15,12 @@ import { getNextMarkerId, savePart } from '../lib/db'
 
 interface EmbedderPageProps {
   lang: 'TR' | 'EN'
+  onEmbedComplete?: () => void
 }
 
 type Step = 'upload' | 'preset' | 'place' | 'processing' | 'done'
 
-export default function EmbedderPage({ lang }: EmbedderPageProps) {
+export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProps) {
   const [step, setStep] = useState<Step>('upload')
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null)
   const [, setFilename] = useState('')
@@ -37,8 +38,8 @@ export default function EmbedderPage({ lang }: EmbedderPageProps) {
   const [resultGeo, setResultGeo] = useState<THREE.BufferGeometry | null>(null)
   const markerIdRef       = useRef<number>(0)
   const originalBufferRef = useRef<ArrayBuffer | null>(null)
-  const leftWidthRef      = useRef(288)
-  const [leftWidth, setLeftWidth] = useState(288)
+  const leftWidthRef      = useRef(520)
+  const [leftWidth, setLeftWidth] = useState(520)
 
   const t = lang === 'TR'
     ? {
@@ -140,12 +141,13 @@ export default function EmbedderPage({ lang }: EmbedderPageProps) {
         originalStl:   originalBufferRef.current ?? undefined,
         printReadyStl: printReadyBuffer,
       })
+      onEmbedComplete?.()
       setStep('done')
     } catch (e: any) {
       setErrorMsg(String(e?.message ?? e))
       setStep('place')
     }
-  }, [geometry, rotation, markerX, markerY, markerSize, etchDepth, partName, material, notes])
+  }, [geometry, rotation, markerX, markerY, markerSize, etchDepth, partName, material, notes, onEmbedComplete])
 
   // ── Sol panel sürükle-bırak ─────────────────────────────────────────────
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
@@ -334,6 +336,7 @@ export default function EmbedderPage({ lang }: EmbedderPageProps) {
             rotation={rotation}
             markerX={markerX} markerY={markerY}
             markerSize={markerSize}
+            lang={lang}
             onChange={(x, y) => { setMarkerX(x); setMarkerY(y); setSelectedPreset('custom') }}
           />
         )}
