@@ -1,32 +1,46 @@
-# React + TypeScript + Vite
+# STL ArUco Embedder
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A browser-based PWA for embedding ArUco markers into STL files and scanning them with a camera. Runs entirely offline — no server, no login, no data leaves your device.
 
-Currently, two official plugins are available:
+## What it does
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. **Embed** — Upload an STL file, choose a placement preset (floor, top, bottom) or position the marker manually, then generate a print-ready STL with the ArUco pattern carved in.
+2. **Scan** — Point your phone or webcam at a printed part. The app detects the ArUco marker and looks up the part in your local library.
+3. **Library** — All parts are stored in your browser (IndexedDB). Export your entire library as a ZIP and import it on another device.
 
-## React Compiler
+## Tech stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| | |
+|---|---|
+| UI | React 19 + TypeScript + Tailwind CSS |
+| Bundler | Vite 8 (Rolldown) |
+| 3D | Three.js r185 |
+| Boolean ops | manifold-3d (WASM) |
+| ArUco detection | js-aruco2 (loaded via script tag) |
+| Database | Dexie.js v4 (IndexedDB) |
+| PWA | vite-plugin-pwa + Workbox |
 
-## Expanding the Oxlint configuration
+## Getting started
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Open [http://localhost:5173](http://localhost:5173).
+
+## Build
+
+```bash
+npm run build
+```
+
+Output goes to `dist/`. Can be served from any static host (GitHub Pages, Netlify, etc.).
+
+## Sample files
+
+The `sample/` directory contains a test STL and photos showing a printed Benchy with an embedded ArUco marker scanned from the bottom face.
+
+## Author
+
+Kağan ŞAHİN
