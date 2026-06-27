@@ -50,8 +50,63 @@ async function getDetector(): Promise<any> {
   if (_detector) return _detector
   await ensureLoaded()
   const AR = (window as any).AR
+  if (!AR?.Detector) throw new Error('window.AR.Detector bulunamadı — script yüklenememiş olabilir')
   _detector = new AR.Detector({ dictionaryName: 'ARUCO_4X4_1000' })
   return _detector
+}
+
+// ─── Görüntü ön işleme ───────────────────────────────────────────────────────
+
+const MAX_DETECT_WIDTH = 640
+
+/**
+ * Tespit için görüntüyü MAX_DETECT_WIDTH'e küçültür.
+ * js-aruco2 yüksek çözünürlüklü görüntülerde (Windows kameraları gibi)
+ * başarısız olabiliyor; 640px'de güvenilir çalışıyor.
+ */
+function downscale(src: ImageData): { data: ImageData; scale: number } {
+  if (src.width <= MAX_DETECT_WIDTH) return { data: src, scale: 1 }
+
+  const scale = MAX_DETECT_WIDTH / src.width
+  const w = Math.round(src.width * scale)
+  const h = Math.round(src.height * scale)
+
+  // ImageData → geçici canvas → küçültülmüş canvas → yeni ImageData
+  const srcCanvas = document.createElement('canvas')
+  srcCanvas.width = src.width
+  srcCanvas.height = src.height
+  srcCanvas.getContext('2d')!.putImageData(src, 0, 0)
+
+  const dstCanvas = document.createElement('canvas')
+  dstCanvas.width = w
+  dstCanvas.height = h
+  const dstCtx = dstCanvas.getContext('2d')!
+  dstCtx.drawImage(srcCanvas, 0, 0, w, h)
+
+  return { data: dstCtx.getImageData(0, 0, w, h), scale }
+}
+
+/**
+ * Alpha kanalını 255'e zorla.
+ * Windows'ta bazı GPU sürücüleri canvas'tan premultiplied alpha döndürür;
+ * bu durum js-aruco2'nin eşikleme adımını bozuyor.
+ */
+function normalizeAlpha(src: ImageData): ImageData {
+  const data = new Uint8ClampedArray(src.data)
+  for (let i = 3; i < data.length; i += 4) data[i] = 255
+  return new ImageData(data, src.width, src.height)
+}
+
+/**
+ * Küçültülmüş görüntüdeki köşe koordinatlarını orijinal video boyutuna ölçekle.
+ * (scale = 0.5 → köşe koordinatları 2× büyütülür)
+ */
+function scaleCorners(markers: DetectedMarker[], scale: number): DetectedMarker[] {
+  if (scale === 1) return markers
+  return markers.map(m => ({
+    id: m.id,
+    corners: m.corners.map(c => ({ x: c.x / scale, y: c.y / scale })),
+  }))
 }
 
 // ─── Tespit ──────────────────────────────────────────────────────────────────
@@ -60,21 +115,31 @@ async function getDetector(): Promise<any> {
  * ImageData üzerinde ArUco marker tespiti yapar (async — ilk çağrıda script yükler).
  *
  * Tespit stratejisi (2 katman):
- *   1. Ham görüntü → detect
- *   2. Kontrast artırılmış görüntü → detect (düşük ışıkta yardımcı olur)
+ *   1. Alpha normalize → downscale → detect
+ *   2. Kontrast artırılmış → detect  (düşük ışıkta yardımcı olur)
+ *
+ * Alpha normalizasyonu downscale'den önce yapılır: drawImage sırasında
+ * browser compositing'i alpha < 255 olan piksellerin RGB kanallarını
+ * bozabilir (Windows GPU sürücülerinde yaygın).
  */
 export async function detectMarkers(imageData: ImageData): Promise<DetectedMarker[]> {
   try {
     const det = await getDetector()
 
-    // Katman 1: Ham görüntü
-    const result1: DetectedMarker[] = det.detect(imageData)
-    if (result1.length > 0) return result1
+    // Alpha önce normalize et, sonra downscale — sıra önemli
+    const normalized = normalizeAlpha(imageData)
+    const { data: scaled, scale } = downscale(normalized)
 
-    // Katman 2: Kontrast artırma (histogram germe)
-    const enhanced = enhanceContrast(imageData)
+    // Katman 1: Normalize + downscaled
+    const result1: DetectedMarker[] = det.detect(scaled)
+    if (result1.length > 0) return scaleCorners(result1, scale)
+
+    // Katman 2: Kontrast artırma
+    const enhanced = enhanceContrast(scaled)
     const result2: DetectedMarker[] = det.detect(enhanced)
-    return result2
+    if (result2.length > 0) return scaleCorners(result2, scale)
+
+    return []
   } catch {
     return []
   }
