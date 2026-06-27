@@ -11,10 +11,11 @@ const exporter = new STLExporter()
 export function geometryToSTLBuffer(geo: THREE.BufferGeometry): ArrayBuffer {
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial())
   const dataView = exporter.parse(mesh, { binary: true }) as unknown as DataView
-  // DataView'ın altındaki buffer'ı kopyala (paylaşımlı hafıza sorununu önler)
-  const buf = dataView.buffer
-  const plain = buf instanceof SharedArrayBuffer ? buf.slice(0) : buf as ArrayBuffer
-  return plain.slice(dataView.byteOffset, dataView.byteOffset + dataView.byteLength)
+  // Byte'ları garanti ArrayBuffer'a kopyala (SharedArrayBuffer type uyumsuzluğunu önler)
+  const src = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength)
+  const dst = new ArrayBuffer(src.byteLength)
+  new Uint8Array(dst).set(src)
+  return dst
 }
 
 /** Geometriyi binary STL olarak indirir. */
