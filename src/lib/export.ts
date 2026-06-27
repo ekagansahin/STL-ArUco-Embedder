@@ -12,7 +12,9 @@ export function geometryToSTLBuffer(geo: THREE.BufferGeometry): ArrayBuffer {
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial())
   const dataView = exporter.parse(mesh, { binary: true }) as unknown as DataView
   // DataView'ın altındaki buffer'ı kopyala (paylaşımlı hafıza sorununu önler)
-  return dataView.buffer.slice(dataView.byteOffset, dataView.byteOffset + dataView.byteLength)
+  const buf = dataView.buffer
+  const plain = buf instanceof SharedArrayBuffer ? buf.slice(0) : buf as ArrayBuffer
+  return plain.slice(dataView.byteOffset, dataView.byteOffset + dataView.byteLength)
 }
 
 /** Geometriyi binary STL olarak indirir. */
