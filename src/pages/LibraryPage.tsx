@@ -10,9 +10,10 @@ import { exportProject, importProject } from '../lib/project-io'
 
 interface LibraryPageProps {
   lang: 'TR' | 'EN'
+  refreshKey?: number
 }
 
-export default function LibraryPage({ lang }: LibraryPageProps) {
+export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) {
   const [parts, setParts]         = useState<Part[]>([])
   const [loading, setLoading]     = useState(true)
   const [busy, setBusy]           = useState(false)
@@ -81,7 +82,7 @@ export default function LibraryPage({ lang }: LibraryPageProps) {
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [refreshKey])
 
   // ─── Parça işlemleri ───────────────────────────────────────────────────────
 
