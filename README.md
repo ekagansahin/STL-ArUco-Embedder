@@ -60,16 +60,6 @@ All parts are stored locally in IndexedDB (via [Dexie.js](https://dexie.org/)). 
 
 ---
 
-## Sample
-
-The `sample/` directory contains:
-- `ID_9_ORIGINAL.stl` — original Benchy mesh
-- `ID_9_PRINT_READY.stl` — Benchy with ArUco ID 9 carved into the bottom
-- `Benchy_modified.jpeg` — photo of the printed part
-- `Benchy_modified_bottom.jpeg` — bottom face showing the marker
-
----
-
 ## Tech stack
 
 | Layer | Technology |
@@ -122,29 +112,6 @@ Output goes to `dist/`. Deploy to any static host.
 
 ---
 
-## Deployment
-
-### GitHub Pages
-
-1. In `vite.config.ts`, set the `base` option to your repo name:
-   ```ts
-   base: '/STL-ArUco-Embedder/'
-   ```
-2. Build and push the `dist/` folder to the `gh-pages` branch, or use a GitHub Actions workflow.
-
-### Netlify / Vercel
-
-Drop the `dist/` folder or connect the repo and set the build command to `npm run build` with publish directory `dist`.
-
----
-
-## Known limitations
-
-- **Mirror detection:** The ArUco pattern is carved from the bottom face looking upward. Depending on the slicer and print orientation, the scanned marker may appear mirrored on the X axis. If this occurs, the fix is a one-line change in `src/lib/aruco.ts` (see inline comment).
-- **Mesh validity:** manifold-3d requires watertight meshes. Non-manifold or open-surface STLs may fail during boolean subtraction.
-- **Camera permissions:** The Scanner tab requires camera access. On iOS, this only works in Safari.
-
----
 
 ## License
 
@@ -154,4 +121,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Author
 
-**Kağan ŞAHİN**
+**E. Kağan ŞAHİN**
