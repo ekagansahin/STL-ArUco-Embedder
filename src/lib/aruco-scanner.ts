@@ -34,10 +34,13 @@ function loadScript(src: string): Promise<void> {
 
 async function ensureLoaded(): Promise<void> {
   if (_loadPromise) return _loadPromise
+  // base-relative yol: GitHub Pages alt dizininde (/STL-ArUco-Embedder/) de doğru çözülsün.
+  // import.meta.env.BASE_URL daima '/' ile biter (dev'de '/', prod'da '/STL-ArUco-Embedder/').
+  const base = import.meta.env.BASE_URL
   _loadPromise = (async () => {
-    await loadScript('/aruco/cv.js')
-    await loadScript('/aruco/aruco.js')
-    await loadScript('/aruco/aruco_4x4_1000.js')
+    await loadScript(`${base}aruco/cv.js`)
+    await loadScript(`${base}aruco/aruco.js`)
+    await loadScript(`${base}aruco/aruco_4x4_1000.js`)
   })()
   return _loadPromise
 }
