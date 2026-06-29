@@ -2,6 +2,7 @@ import { useState } from 'react'
 import EmbedderPage from './pages/EmbedderPage'
 import ScannerPage from './pages/ScannerPage'
 import LibraryPage from './pages/LibraryPage'
+import MobileGate from './components/MobileGate'
 
 type Tab = 'embed' | 'scan' | 'library'
 type Lang = 'TR' | 'EN'
@@ -19,6 +20,9 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-full">
+
+      {/* Telefon / tablet bilgilendirme kapısı — yalnızca mobilde görünür */}
+      <MobileGate lang={lang} />
 
       {/* Navbar */}
       <header className="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-neutral-800 bg-neutral-950">

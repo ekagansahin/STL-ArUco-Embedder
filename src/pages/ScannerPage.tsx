@@ -22,12 +22,16 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
   // lastIdRef: RAF döngüsündeki stale closure sorununu önler.
   // State (lastId) sadece UI render için; kontrol ref ile yapılır.
   const lastIdRef  = useRef<number | null>(null)
+  // detectingRef: bir tespit devam ederken yenisini başlatma (ana iş parçacığı
+  // yığılmasını önler — video akıcı kalır).
+  const detectingRef = useRef(false)
 
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [foundPart, setFoundPart] = useState<Part | null | undefined>(undefined)
   const [lastId, setLastId] = useState<number | null>(null)
   const [scanning, setScanning] = useState(false)
+  const [engineError, setEngineError] = useState<string | null>(null)
 
   const t = lang === 'TR'
     ? {
@@ -47,6 +51,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         detected:   'Tespit edildi — ID',
         scanning:   'Taranıyor…',
         camOff:     'Kamera kapalı',
+        engineError:'ArUco motoru yüklenemedi:',
       }
     : {
         title:      'ArUco Camera Scanner',
@@ -65,6 +70,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         detected:   'Detected — ID',
         scanning:   'Scanning…',
         camOff:     'Camera off',
+        engineError:'Failed to load ArUco engine:',
       }
 
   // ─── Kamera ────────────────────────────────────────────────────────────────
@@ -105,8 +111,13 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     setScanning(false)
   }, [])
 
-  // Sayfa mount olunca aruco scriptlerini ön-yükle
-  useEffect(() => { preloadAruco() }, [])
+  // Sayfa mount olunca aruco scriptlerini ön-yükle.
+  // Yükleme başarısız olursa (örn. script 404) sessiz kalma — UI'da bildir.
+  useEffect(() => {
+    preloadAruco()
+      .then(() => setEngineError(null))
+      .catch((e) => setEngineError(String(e?.message ?? e)))
+  }, [])
 
   // Kamera durduğunda temizle
   useEffect(() => () => stopCamera(), [stopCamera])
@@ -138,46 +149,56 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       return
     }
 
-    canvas.width  = w
-    canvas.height = h
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })!
-    ctx.drawImage(video, 0, 0, w, h)
-    const imageData = ctx.getImageData(0, 0, w, h)
+    // Bir önceki tespit hâlâ sürüyorsa bu kareyi atla (yığılmayı önle)
+    if (!detectingRef.current) {
+      detectingRef.current = true
 
-    // Async detection — RAF döngüsü bloklanmaz
-    detectMarkers(imageData).then((markers) => {
-      // Overlay boyutunu video ile eşitle
-      if (overlay && (overlay.width !== w || overlay.height !== h)) {
-        overlay.width  = w
-        overlay.height = h
-      }
+      canvas.width  = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!
+      ctx.drawImage(video, 0, 0, w, h)
+      const imageData = ctx.getImageData(0, 0, w, h)
 
-      if (overlay) {
-        const octx = overlay.getContext('2d')!
-        octx.clearRect(0, 0, w, h)
-
-        if (markers.length > 0) {
-          const m = markers[0]
-          // Köşeleri yeşil poligon olarak çiz
-          octx.strokeStyle = '#22c55e'
-          octx.lineWidth   = Math.max(2, w / 200)
-          octx.beginPath()
-          octx.moveTo(m.corners[0].x, m.corners[0].y)
-          for (let i = 1; i < m.corners.length; i++) {
-            octx.lineTo(m.corners[i].x, m.corners[i].y)
-          }
-          octx.closePath()
-          octx.stroke()
-
-          // ID etiketi
-          octx.fillStyle = '#22c55e'
-          octx.font      = `bold ${Math.max(14, w / 40)}px monospace`
-          octx.fillText(`ID: ${m.id}`, m.corners[0].x + 4, m.corners[0].y - 6)
-
-          handleDetection(m.id)
+      // Async detection — RAF döngüsü bloklanmaz
+      detectMarkers(imageData).then((markers) => {
+        // Overlay boyutunu video ile eşitle
+        if (overlay && (overlay.width !== w || overlay.height !== h)) {
+          overlay.width  = w
+          overlay.height = h
         }
-      }
-    })
+
+        if (overlay) {
+          const octx = overlay.getContext('2d')!
+          octx.clearRect(0, 0, w, h)
+
+          if (markers.length > 0) {
+            const m = markers[0]
+            // Video CSS ile yatay aynalanıyor (doğal kontrol için). Köşeler ham
+            // kare uzayında geldiğinden, aynalı video ile hizalamak için x'i çevir.
+            // Metin overlay aynalanmadığından okunur kalır.
+            const fx = (x: number) => w - x
+            octx.strokeStyle = '#22c55e'
+            octx.lineWidth   = Math.max(2, w / 200)
+            octx.beginPath()
+            octx.moveTo(fx(m.corners[0].x), m.corners[0].y)
+            for (let i = 1; i < m.corners.length; i++) {
+              octx.lineTo(fx(m.corners[i].x), m.corners[i].y)
+            }
+            octx.closePath()
+            octx.stroke()
+
+            // ID etiketi
+            octx.fillStyle = '#22c55e'
+            octx.font      = `bold ${Math.max(14, w / 40)}px monospace`
+            octx.fillText(`ID: ${m.id}`, fx(m.corners[0].x) + 4, m.corners[0].y - 6)
+
+            handleDetection(m.id)
+          }
+        }
+      }).finally(() => {
+        detectingRef.current = false
+      })
+    }
 
     rafRef.current = requestAnimationFrame(detectionLoop)
   }, [handleDetection])
@@ -220,6 +241,13 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       <h2 className="text-lg font-semibold text-neutral-100">{t.title}</h2>
       <p className="text-sm text-neutral-500">{t.desc}</p>
 
+      {/* Motor yükleme hatası — sessiz başarısızlığı görünür kıl */}
+      {engineError && (
+        <div className="text-sm px-4 py-2.5 rounded-xl border bg-red-950/40 border-red-900 text-red-400">
+          {t.engineError} <span className="font-mono text-xs">{engineError}</span>
+        </div>
+      )}
+
       {/* Video + overlay */}
       <div
         className="relative rounded-xl overflow-hidden border border-neutral-800 bg-neutral-900"
@@ -230,6 +258,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           playsInline
           muted
           className="w-full h-full object-cover"
+          style={{ transform: 'scaleX(-1)' }}  /* doğal ayna görünümü — kontrol kolaylığı */
         />
 
         {/* Tespit köşelerini çizen overlay canvas */}

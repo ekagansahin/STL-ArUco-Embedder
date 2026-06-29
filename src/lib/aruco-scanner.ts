@@ -142,6 +142,20 @@ export async function detectMarkers(imageData: ImageData): Promise<DetectedMarke
     const result2: DetectedMarker[] = det.detect(enhanced)
     if (result2.length > 0) return scaleCorners(result2, scale)
 
+    // Katman 3: Yatay çevrilmiş (ayna) kare.
+    // ArUco tespiti aynaya duyarlıdır: ekranda/baskıda ayna görüntüsü olan
+    // bir marker ham karede bulunamaz. Çevrilmiş karede bulursak köşeleri
+    // ham kare uzayına geri çeviririz (x' = width - x). ID zaten doğru çıkar.
+    const flipped = flipHorizontal(scaled)
+    const result3: DetectedMarker[] = det.detect(flipped)
+    if (result3.length > 0) {
+      const unflipped = result3.map(m => ({
+        id: m.id,
+        corners: m.corners.map(c => ({ x: scaled.width - c.x, y: c.y })),
+      }))
+      return scaleCorners(unflipped, scale)
+    }
+
     return []
   } catch {
     return []
@@ -149,11 +163,30 @@ export async function detectMarkers(imageData: ImageData): Promise<DetectedMarke
 }
 
 /**
- * Betimsel fonksiyon: aruco script'lerini ön-yükle.
- * Scanner sekmesi açılınca çağrılır — gerçek tarama başlamadan hazır olsun.
+ * Görüntüyü yatay (X) çevirir — ayna-dayanıklı tespit için.
  */
-export function preloadAruco(): void {
-  ensureLoaded().catch(() => {/* sessizce başarısız olursa retry edilir */})
+function flipHorizontal(src: ImageData): ImageData {
+  const { width: w, height: h, data } = src
+  const out = new Uint8ClampedArray(data.length)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const si = (y * w + x) * 4
+      const di = (y * w + (w - 1 - x)) * 4
+      out[di]     = data[si]
+      out[di + 1] = data[si + 1]
+      out[di + 2] = data[si + 2]
+      out[di + 3] = data[si + 3]
+    }
+  }
+  return new ImageData(out, w, h)
+}
+
+/**
+ * aruco script'lerini ön-yükle. Promise döndürür: çağıran yükleme
+ * başarısını/başarısızlığını izleyebilir (UI'da hata göstermek için).
+ */
+export function preloadAruco(): Promise<void> {
+  return ensureLoaded()
 }
 
 // ─── Yardımcı ─────────────────────────────────────────────────────────────────
