@@ -13,6 +13,15 @@ interface ScannerPageProps {
   lang: 'TR' | 'EN'
 }
 
+// ── Kare-bazlı oylama ──────────────────────────────────────────────────────
+// Bir ID'yi kilitlemeden önce son VOTE_WINDOW karenin en az VOTE_MIN'inde
+// baskın çıkmasını bekleriz. Yoğun ARUCO_4X4_1000 sözlüğünde tek bir bit
+// hatası markerı başka bir GEÇERLİ ID'ye kaydırabildiği için, anlık yanlış
+// okumalar birkaç kareye yayılıp elenir; gerçek marker sabit tutulduğunda
+// en sık tekrar eden ID olarak kazanır.
+const VOTE_WINDOW = 7
+const VOTE_MIN = 4
+
 export default function ScannerPage({ lang }: ScannerPageProps) {
   const videoRef   = useRef<HTMLVideoElement>(null)
   const canvasRef  = useRef<HTMLCanvasElement>(null)   // gizli, frame okumak için
@@ -25,6 +34,8 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
   // detectingRef: bir tespit devam ederken yenisini başlatma (ana iş parçacığı
   // yığılmasını önler — video akıcı kalır).
   const detectingRef = useRef(false)
+  // recentIdsRef: son karelerin tespit ID'leri (tespit yoksa -1). Oylama için.
+  const recentIdsRef = useRef<number[]>([])
 
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
@@ -80,6 +91,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     setFoundPart(undefined)
     setLastId(null)
     lastIdRef.current = null
+    recentIdsRef.current = []
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -107,6 +119,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     // Overlay'i temizle
     const ol = overlayRef.current
     if (ol) ol.getContext('2d')?.clearRect(0, 0, ol.width, ol.height)
+    recentIdsRef.current = []
     setCameraActive(false)
     setScanning(false)
   }, [])
@@ -167,6 +180,15 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           overlay.height = h
         }
 
+        // ── Oylama tamponunu güncelle ──
+        // Bu kareyi kaydır (tespit yoksa -1). Tampon sabit uzunlukta tutulur.
+        const buf = recentIdsRef.current
+        buf.push(markers.length > 0 ? markers[0].id : -1)
+        if (buf.length > VOTE_WINDOW) buf.shift()
+
+        // Zaten kilitli miyiz? (onaylanmış tespit varsa kutu yeşil, yoksa sarı=aday)
+        const confirmed = lastIdRef.current !== null
+
         if (overlay) {
           const octx = overlay.getContext('2d')!
           octx.clearRect(0, 0, w, h)
@@ -177,7 +199,8 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
             // kare uzayında geldiğinden, aynalı video ile hizalamak için x'i çevir.
             // Metin overlay aynalanmadığından okunur kalır.
             const fx = (x: number) => w - x
-            octx.strokeStyle = '#22c55e'
+            const color = confirmed ? '#22c55e' : '#eab308'  // yeşil onaylı / sarı aday
+            octx.strokeStyle = color
             octx.lineWidth   = Math.max(2, w / 200)
             octx.beginPath()
             octx.moveTo(fx(m.corners[0].x), m.corners[0].y)
@@ -188,11 +211,27 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
             octx.stroke()
 
             // ID etiketi
-            octx.fillStyle = '#22c55e'
+            octx.fillStyle = color
             octx.font      = `bold ${Math.max(14, w / 40)}px monospace`
             octx.fillText(`ID: ${m.id}`, fx(m.corners[0].x) + 4, m.corners[0].y - 6)
+          }
+        }
 
-            handleDetection(m.id)
+        // ── Kilitleme kararı ──
+        // Yalnızca henüz kilitli değilken; bir ID son karelerde baskın çıkarsa
+        // (≥ VOTE_MIN) kabul et. Böylece tek kareye özgü yanlış okumalar geçmez.
+        if (lastIdRef.current === null) {
+          const counts = new Map<number, number>()
+          for (const v of buf) {
+            if (v >= 0) counts.set(v, (counts.get(v) ?? 0) + 1)
+          }
+          let bestId = -1
+          let bestCount = 0
+          for (const [id, c] of counts) {
+            if (c > bestCount) { bestId = id; bestCount = c }
+          }
+          if (bestId >= 0 && bestCount >= VOTE_MIN) {
+            handleDetection(bestId)
           }
         }
       }).finally(() => {
@@ -226,6 +265,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
 
   const resetScan = () => {
     lastIdRef.current = null
+    recentIdsRef.current = []
     setFoundPart(undefined)
     setLastId(null)
     setScanning(true)
