@@ -117,9 +117,26 @@ function scaleCorners(markers: DetectedMarker[], scale: number): DetectedMarker[
 /**
  * ImageData üzerinde ArUco marker tespiti yapar (async — ilk çağrıda script yükler).
  *
- * Tespit stratejisi (2 katman):
- *   1. Alpha normalize → downscale → detect
- *   2. Kontrast artırılmış → detect  (düşük ışıkta yardımcı olur)
+ * Tespit stratejisi — ön işleme × yön matrisi:
+ *   Ön işleme varyantları (ucuzdan pahalıya):
+ *     1. Ham (yalnız normalize + downscale)
+ *     2. Global kontrast germe (enhanceContrast)
+ *     3. CLAHE — yerel adaptif kontrast (tek renk gravür markerlar için)
+ *   Her varyant iki yönde denenir:
+ *     a. Düz
+ *     b. Yatay çevrilmiş (ayna)
+ *
+ * NEDEN matris: Baskıda marker parçanın alt yüzüne gömülü olduğundan kamera
+ * onu her zaman AYNALI görür; js-aruco2 motoru içeride yalnızca 4 rotasyon
+ * dener, aynayı denemez — bu yüzden kareyi biz çeviririz. Ayrıca tek renk
+ * gravürde kontrast yalnızca oyukların gölgesinden gelir (çok düşük ve yerel),
+ * bu yüzden ayna telafisi ile kontrast güçlendirmenin AYNI ANDA uygulanması
+ * gerekir. Eski kodda flip yalnız ham kareye uygulanıyordu; flip + kontrast
+ * kombinasyonu hiç denenmiyordu.
+ *
+ * İlk tutan varyant kazanır (kısa devre) → tipik karede ilk varyant döner,
+ * ekstra maliyet olmaz. Aynalı yönde köşeler ham kare uzayına geri çevrilir
+ * (x' = width - x); ID zaten doğru çıkar.
  *
  * Alpha normalizasyonu downscale'den önce yapılır: drawImage sırasında
  * browser compositing'i alpha < 255 olan piksellerin RGB kanallarını
@@ -133,27 +150,31 @@ export async function detectMarkers(imageData: ImageData): Promise<DetectedMarke
     const normalized = normalizeAlpha(imageData)
     const { data: scaled, scale } = downscale(normalized)
 
-    // Katman 1: Normalize + downscaled
-    const result1: DetectedMarker[] = det.detect(scaled)
-    if (result1.length > 0) return scaleCorners(result1, scale)
+    // Ön işleme varyantları — tembel değil, sırayla üretilir ki gereksiz
+    // pahalı işlem (CLAHE) erken tutanda hiç çalışmasın.
+    const variantFns: Array<(img: ImageData) => ImageData> = [
+      (img) => img,          // ham
+      enhanceContrast,       // global germe
+      clahe,                 // yerel adaptif kontrast
+    ]
 
-    // Katman 2: Kontrast artırma
-    const enhanced = enhanceContrast(scaled)
-    const result2: DetectedMarker[] = det.detect(enhanced)
-    if (result2.length > 0) return scaleCorners(result2, scale)
+    for (const makeVariant of variantFns) {
+      const variant = makeVariant(scaled)
 
-    // Katman 3: Yatay çevrilmiş (ayna) kare.
-    // ArUco tespiti aynaya duyarlıdır: ekranda/baskıda ayna görüntüsü olan
-    // bir marker ham karede bulunamaz. Çevrilmiş karede bulursak köşeleri
-    // ham kare uzayına geri çeviririz (x' = width - x). ID zaten doğru çıkar.
-    const flipped = flipHorizontal(scaled)
-    const result3: DetectedMarker[] = det.detect(flipped)
-    if (result3.length > 0) {
-      const unflipped = result3.map(m => ({
-        id: m.id,
-        corners: m.corners.map(c => ({ x: scaled.width - c.x, y: c.y })),
-      }))
-      return scaleCorners(unflipped, scale)
+      // a. Düz
+      const direct: DetectedMarker[] = det.detect(variant)
+      if (direct.length > 0) return scaleCorners(direct, scale)
+
+      // b. Aynalı — köşeleri ham kare uzayına geri çevir (x' = width - x)
+      const flipped = flipHorizontal(variant)
+      const mirrored: DetectedMarker[] = det.detect(flipped)
+      if (mirrored.length > 0) {
+        const unflipped = mirrored.map(m => ({
+          id: m.id,
+          corners: m.corners.map(c => ({ x: variant.width - c.x, y: c.y })),
+        }))
+        return scaleCorners(unflipped, scale)
+      }
     }
 
     return []
@@ -215,4 +236,100 @@ function enhanceContrast(src: ImageData): ImageData {
   }
 
   return new ImageData(data, src.width, src.height)
+}
+
+/**
+ * CLAHE — Contrast Limited Adaptive Histogram Equalization.
+ *
+ * Global germenin (enhanceContrast) aksine kontrastı YEREL olarak açar:
+ * görüntüyü karolara böler, her karoda histogram eşitler, clipLimit ile
+ * gürültü patlamasını sınırlar ve karolar arası bilineer interpolasyonla
+ * blok sınırı artefaktını yok eder. Tek renk 3D-baskı gravür markerlarda
+ * kontrast yalnız oyukların yerel gölgesinden geldiği için bu, düz
+ * germeden çok daha etkilidir.
+ *
+ * Sonuç grayscale'dir (R=G=B=eşitlenmiş luma); alpha korunur.
+ */
+function clahe(src: ImageData, tiles = 8, clipLimit = 3.0): ImageData {
+  const { width: w, height: h, data } = src
+  const bins = 256
+
+  // Luma kanalı
+  const lum = new Uint8Array(w * h)
+  for (let p = 0, i = 0; p < lum.length; p++, i += 4) {
+    lum[p] = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114)
+  }
+
+  const tw = Math.max(1, Math.floor(w / tiles))
+  const th = Math.max(1, Math.floor(h / tiles))
+  const nx = Math.ceil(w / tw)
+  const ny = Math.ceil(h / th)
+
+  // Her karo için 256-girişli eşleme (LUT) hesapla
+  const maps: Uint8Array[] = new Array(nx * ny)
+  for (let ty = 0; ty < ny; ty++) {
+    for (let tx = 0; tx < nx; tx++) {
+      const x0 = tx * tw, y0 = ty * th
+      const x1 = Math.min(x0 + tw, w), y1 = Math.min(y0 + th, h)
+
+      const hist = new Float32Array(bins)
+      let count = 0
+      for (let y = y0; y < y1; y++) {
+        const rowOff = y * w
+        for (let x = x0; x < x1; x++) { hist[lum[rowOff + x]]++; count++ }
+      }
+
+      // Clip + fazlalığı eşit dağıt
+      const clip = Math.max(1, (clipLimit * count) / bins)
+      let excess = 0
+      for (let b = 0; b < bins; b++) if (hist[b] > clip) { excess += hist[b] - clip; hist[b] = clip }
+      const inc = excess / bins
+      for (let b = 0; b < bins; b++) hist[b] += inc
+
+      // CDF → 0-255 eşleme
+      const map = new Uint8Array(bins)
+      const total = count || 1
+      let cdf = 0
+      for (let b = 0; b < bins; b++) {
+        cdf += hist[b]
+        map[b] = Math.max(0, Math.min(255, Math.round((cdf / total) * 255)))
+      }
+      maps[ty * nx + tx] = map
+    }
+  }
+
+  // Piksel başına bilineer interpolasyonla eşle
+  const out = new Uint8ClampedArray(data)
+  for (let y = 0; y < h; y++) {
+    const gy = (y + 0.5) / th - 0.5
+    let ty0 = Math.floor(gy)
+    let fy = gy - ty0
+    if (ty0 < 0) { ty0 = 0; fy = 0 }
+    if (ty0 > ny - 1) { ty0 = ny - 1; fy = 0 }
+    const ty1 = Math.min(ty0 + 1, ny - 1)
+
+    for (let x = 0; x < w; x++) {
+      const gx = (x + 0.5) / tw - 0.5
+      let tx0 = Math.floor(gx)
+      let fx = gx - tx0
+      if (tx0 < 0) { tx0 = 0; fx = 0 }
+      if (tx0 > nx - 1) { tx0 = nx - 1; fx = 0 }
+      const tx1 = Math.min(tx0 + 1, nx - 1)
+
+      const v = lum[y * w + x]
+      const m00 = maps[ty0 * nx + tx0][v]
+      const m01 = maps[ty0 * nx + tx1][v]
+      const m10 = maps[ty1 * nx + tx0][v]
+      const m11 = maps[ty1 * nx + tx1][v]
+      const top = m00 * (1 - fx) + m01 * fx
+      const bot = m10 * (1 - fx) + m11 * fx
+      const val = Math.round(top * (1 - fy) + bot * fy)
+
+      const i = (y * w + x) * 4
+      out[i] = out[i + 1] = out[i + 2] = val
+      // alpha korunur
+    }
+  }
+
+  return new ImageData(out, w, h)
 }
