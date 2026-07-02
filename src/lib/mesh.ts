@@ -170,8 +170,8 @@ function computePresetParams(geo: THREE.BufferGeometry, rotMatrix: THREE.Matrix4
   const shortSide = Math.min(width, height)
 
   // Boyut: kısa kenarın %25'i, 7.2–30mm arasında
-  const markerSize = Math.max(7.2, Math.min(30, shortSide * 0.25))
-  const etchDepth = 0.6
+  const markerSize = 10   // sabit 10x10 mm (kullanıcı tercihi)
+  const etchDepth = 0.8   // oyma derinliği 0.8 mm
 
   const cx = (bb.min.x + bb.max.x) / 2
   const cy = (bb.min.y + bb.max.y) / 2
@@ -272,8 +272,8 @@ export function computePresets(geo: THREE.BufferGeometry): Preset[] {
     badge: 'manual',
     rotation: [0, 0, 0],
     position: [0, 0],
-    markerSize: 15,
-    etchDepth: 0.6,
+    markerSize: 10,
+    etchDepth: 0.8,
     isValid: true,
   })
 

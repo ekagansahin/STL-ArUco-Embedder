@@ -1,15 +1,16 @@
 /**
  * ArUco marker mesh üreticisi.
- * Önceden üretilmiş aruco_dict.json'dan bit pattern okur,
+ * Önceden üretilmiş aruco_dict_4x4_50.json'dan bit pattern okur,
  * siyah hücreleri manifold-3d box'larına dönüştürür.
+ * NOT: 4x4_50 sözlüğü — kodlar arası mesafe yüksek, yanlış okumaya dayanıklı.
  */
 
 import { getManifold } from './manifold'
-import arucoDict from '../assets/aruco_dict.json'
+import arucoDict from '../assets/aruco_dict_4x4_50.json'
 
 /** marker ID için 6×6 bit grid döndürür (1=siyah, 0=beyaz) */
 export function getMarkerBits(id: number): number[][] {
-  if (id < 0 || id >= arucoDict.length) throw new Error(`ArUco ID ${id} geçersiz (0-999)`)
+  if (id < 0 || id >= arucoDict.length) throw new Error(`ArUco ID ${id} geçersiz (0-49)`)
   return arucoDict[id] as number[][]
 }
 

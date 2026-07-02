@@ -8,7 +8,7 @@
  * Yükleme sırası:
  *   1. /aruco/cv.js          → window.CV
  *   2. /aruco/aruco.js       → window.AR  (window.CV'yi okur)
- *   3. /aruco/aruco_4x4_1000.js → window.AR.DICTIONARIES['ARUCO_4X4_1000']
+ *   3. /aruco/aruco_4x4_50.js → window.AR.DICTIONARIES['ARUCO_4X4_50']
  */
 
 export interface DetectedMarker {
@@ -40,7 +40,7 @@ async function ensureLoaded(): Promise<void> {
   _loadPromise = (async () => {
     await loadScript(`${base}aruco/cv.js`)
     await loadScript(`${base}aruco/aruco.js`)
-    await loadScript(`${base}aruco/aruco_4x4_1000.js`)
+    await loadScript(`${base}aruco/aruco_4x4_50.js`)
   })()
   return _loadPromise
 }
@@ -54,7 +54,7 @@ async function getDetector(): Promise<any> {
   await ensureLoaded()
   const AR = (window as any).AR
   if (!AR?.Detector) throw new Error('window.AR.Detector bulunamadı — script yüklenememiş olabilir')
-  _detector = new AR.Detector({ dictionaryName: 'ARUCO_4X4_1000' })
+  _detector = new AR.Detector({ dictionaryName: 'ARUCO_4X4_50' })
   return _detector
 }
 

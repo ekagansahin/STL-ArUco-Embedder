@@ -23,16 +23,18 @@ interface SliderProps {
   max: number
   step: number
   unit?: string
+  /** Değer okumasını özelleştir (ör. kare marker: "10 × 10 mm²"). */
+  format?: (v: number) => string
   onChange: (v: number) => void
 }
 
-function Slider({ label, value, min, max, step, unit = '', onChange }: SliderProps) {
+function Slider({ label, value, min, max, step, unit = '', format, onChange }: SliderProps) {
   return (
     <div className="space-y-1">
       <div className="flex justify-between items-center">
         <span className="text-xs text-neutral-400">{label}</span>
         <span className="text-xs font-mono text-neutral-200">
-          {value.toFixed(step < 1 ? 1 : 0)}{unit}
+          {format ? format(value) : `${value.toFixed(step < 1 ? 1 : 0)}${unit}`}
         </span>
       </div>
       <input
@@ -130,7 +132,8 @@ export default function PlacementControls({
       <div>
         <div className="text-xs text-neutral-500 uppercase tracking-wider mb-3">{t.geometry}</div>
         <div className="space-y-3">
-          <Slider label={`${t.size} (min 7.2mm)`} value={markerSize} min={7.2} max={50} step={0.5} unit=" mm"
+          <Slider label={`${t.size} (kenar, min 7.2mm)`} value={markerSize} min={7.2} max={50} step={0.5}
+            format={(v) => `${v.toFixed(1)} × ${v.toFixed(1)} mm²`}
             onChange={(v) => onChange('markerSize', v)} />
           <Slider label={t.depth} value={etchDepth} min={0.2} max={2.0} step={0.1} unit=" mm"
             onChange={(v) => onChange('etchDepth', v)} />

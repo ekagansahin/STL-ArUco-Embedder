@@ -64,7 +64,7 @@ export default function PresetCards({ presets, selected, onSelect, lang }: Prese
               {preset.badge !== 'manual' && (
                 <div className="mt-2 flex gap-2 flex-wrap">
                   <span className="text-[10px] bg-neutral-800 text-neutral-400 px-1.5 py-0.5 rounded">
-                    {preset.markerSize}mm
+                    {preset.markerSize} × {preset.markerSize} mm²
                   </span>
                   <span className="text-[10px] bg-neutral-800 text-neutral-400 px-1.5 py-0.5 rounded">
                     {preset.etchDepth}mm derinlik

@@ -1,6 +1,6 @@
 /**
  * Kamera tarayıcı sayfası.
- * js-aruco2 ile tarayıcı taraflı ARUCO_4X4_1000 tespiti yapar.
+ * js-aruco2 ile tarayıcı taraflı ARUCO_4X4_50 tespiti yapar.
  * Telefon arka kamerasını (facingMode: environment) otomatik tercih eder.
  */
 

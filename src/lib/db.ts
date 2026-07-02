@@ -42,10 +42,10 @@ export const db = new ArUcoDatabase()
 export async function getNextMarkerId(): Promise<number> {
   const all = await db.parts.toArray()
   const usedIds = new Set(all.map((p) => p.markerId))
-  for (let i = 0; i < 1000; i++) {
+  for (let i = 0; i < 50; i++) {
     if (!usedIds.has(i)) return i
   }
-  throw new Error('Tüm ID\'ler (0-999) kullanılmış')
+  throw new Error('Tüm ID\'ler (0-49) kullanılmış')
 }
 
 export async function savePart(part: Omit<Part, 'id'>): Promise<number> {
