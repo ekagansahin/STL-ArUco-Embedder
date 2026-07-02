@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getPartByMarkerId } from '../lib/db'
+import { getPartByMarkerId, getAllParts } from '../lib/db'
 import { detectMarkers, preloadAruco } from '../lib/aruco-scanner'
 import type { Part } from '../lib/db'
 
@@ -13,14 +13,16 @@ interface ScannerPageProps {
   lang: 'TR' | 'EN'
 }
 
-// ── Kare-bazlı oylama ──────────────────────────────────────────────────────
-// Bir ID'yi kilitlemeden önce son VOTE_WINDOW karenin en az VOTE_MIN'inde
-// baskın çıkmasını bekleriz. Yoğun ARUCO_4X4_1000 sözlüğünde tek bir bit
-// hatası markerı başka bir GEÇERLİ ID'ye kaydırabildiği için, anlık yanlış
-// okumalar birkaç kareye yayılıp elenir; gerçek marker sabit tutulduğunda
-// en sık tekrar eden ID olarak kazanır.
-const VOTE_WINDOW = 7
-const VOTE_MIN = 4
+// ── Kare-bazlı oylama — zaman kademeli ──────────────────────────────────────
+// İlk RELAX_AFTER_MS boyunca SIKI eşikle (yüksek güven) kilit ararız. O sürede
+// bulunamazsa GEVŞEK eşiğe düşer, denemeye devam ederiz. Toplam GIVEUP_AFTER_MS
+// dolduğunda hâlâ kilit yoksa "bulunamadı" gösterilir.
+// Not: her eşik "son N karenin en az M'i" demek. Tampon en büyük pencere kadar
+// tutulur; sayım o anki fazın penceresi üzerinden yapılır.
+const VOTE_STRICT   = { window: 7, min: 4 }
+const VOTE_RELAXED  = { window: 4, min: 2 }
+const RELAX_AFTER_MS  = 3000   // 3 sn sonra gevşe
+const GIVEUP_AFTER_MS = 15000  // 15 sn sonra bulunamadı
 
 export default function ScannerPage({ lang }: ScannerPageProps) {
   const videoRef   = useRef<HTMLVideoElement>(null)
@@ -36,12 +38,22 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
   const detectingRef = useRef(false)
   // recentIdsRef: son karelerin tespit ID'leri (tespit yoksa -1). Oylama için.
   const recentIdsRef = useRef<number[]>([])
+  // allowedIdsRef: DB'de kayıtlı marker ID'leri. Yalnızca bu kümedeki ID'ler
+  // kabul edilir — yoğun sözlükte "1" yerine "136" gibi kayıp okumalar (kayıtlı
+  // olmadıkları için) reddedilir. Küme boşsa (hiç parça yok) filtre uygulanmaz.
+  const allowedIdsRef = useRef<Set<number>>(new Set())
+  // scanStartRef: bu tarama turunun başlangıç zamanı (performance.now).
+  const scanStartRef = useRef(0)
+  // scanTimedOutRef: 15 sn doldu ve kilit yok → RAF döngüsündeki stale closure
+  // sorununu önlemek için ref (state ile birlikte tutulur).
+  const scanTimedOutRef = useRef(false)
 
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [foundPart, setFoundPart] = useState<Part | null | undefined>(undefined)
   const [lastId, setLastId] = useState<number | null>(null)
   const [scanning, setScanning] = useState(false)
+  const [scanTimedOut, setScanTimedOut] = useState(false)
   const [engineError, setEngineError] = useState<string | null>(null)
 
   const t = lang === 'TR'
@@ -62,6 +74,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         detected:   'Tespit edildi — ID',
         scanning:   'Taranıyor…',
         camOff:     'Kamera kapalı',
+        timeout:    '⚠️ 15 saniyede marker bulunamadı. Işığı/açıyı değiştirip tekrar deneyin.',
         engineError:'ArUco motoru yüklenemedi:',
       }
     : {
@@ -81,6 +94,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         detected:   'Detected — ID',
         scanning:   'Scanning…',
         camOff:     'Camera off',
+        timeout:    '⚠️ No marker found in 15 seconds. Adjust lighting/angle and try again.',
         engineError:'Failed to load ArUco engine:',
       }
 
@@ -92,6 +106,13 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     setLastId(null)
     lastIdRef.current = null
     recentIdsRef.current = []
+    // Kayıtlı marker ID'lerini DB'den çek — yalnızca bunlar kabul edilecek
+    try {
+      const parts = await getAllParts()
+      allowedIdsRef.current = new Set(parts.map((p) => p.markerId))
+    } catch {
+      allowedIdsRef.current = new Set()
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -102,6 +123,10 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         await videoRef.current.play()
       }
       streamRef.current = stream
+      // Tarama saatini kamera hazır olduğunda başlat
+      scanStartRef.current = performance.now()
+      scanTimedOutRef.current = false
+      setScanTimedOut(false)
       setCameraActive(true)
     } catch {
       setCameraError(t.noCamera)
@@ -120,6 +145,8 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     const ol = overlayRef.current
     if (ol) ol.getContext('2d')?.clearRect(0, 0, ol.width, ol.height)
     recentIdsRef.current = []
+    scanTimedOutRef.current = false
+    setScanTimedOut(false)
     setCameraActive(false)
     setScanning(false)
   }, [])
@@ -162,8 +189,8 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       return
     }
 
-    // Bir önceki tespit hâlâ sürüyorsa bu kareyi atla (yığılmayı önle)
-    if (!detectingRef.current) {
+    // Bir önceki tespit sürüyorsa VEYA zaman aşımına düşüldüyse bu kareyi atla
+    if (!detectingRef.current && !scanTimedOutRef.current) {
       detectingRef.current = true
 
       canvas.width  = w
@@ -180,11 +207,20 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           overlay.height = h
         }
 
+        // ── Kayıtlı ID filtresi ──
+        // rawId: motorun okuduğu ham ID. Yalnızca DB'de kayıtlı ID'ler geçerli
+        // (küme boşsa filtre yok → hepsi geçerli). Kayıtlı olmayan okumalar
+        // (yoğun sözlükte "1"→"136" gibi) tampona -1 olarak girer, hiç sayılmaz.
+        const allowed = allowedIdsRef.current
+        const rawId = markers.length > 0 ? markers[0].id : -1
+        const accepted = rawId >= 0 && (allowed.size === 0 || allowed.has(rawId))
+
         // ── Oylama tamponunu güncelle ──
-        // Bu kareyi kaydır (tespit yoksa -1). Tampon sabit uzunlukta tutulur.
+        // Tampon en büyük pencere (sıkı faz) kadar tutulur; sayım aktif fazın
+        // penceresi üzerinden yapılır.
         const buf = recentIdsRef.current
-        buf.push(markers.length > 0 ? markers[0].id : -1)
-        if (buf.length > VOTE_WINDOW) buf.shift()
+        buf.push(accepted ? rawId : -1)
+        if (buf.length > VOTE_STRICT.window) buf.shift()
 
         // Zaten kilitli miyiz? (onaylanmış tespit varsa kutu yeşil, yoksa sarı=aday)
         const confirmed = lastIdRef.current !== null
@@ -199,7 +235,8 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
             // kare uzayında geldiğinden, aynalı video ile hizalamak için x'i çevir.
             // Metin overlay aynalanmadığından okunur kalır.
             const fx = (x: number) => w - x
-            const color = confirmed ? '#22c55e' : '#eab308'  // yeşil onaylı / sarı aday
+            // Yeşil: onaylı · Sarı: geçerli aday · Kırmızı: kayıtlı değil (reddedildi)
+            const color = confirmed ? '#22c55e' : accepted ? '#eab308' : '#ef4444'
             octx.strokeStyle = color
             octx.lineWidth   = Math.max(2, w / 200)
             octx.beginPath()
@@ -217,21 +254,32 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           }
         }
 
-        // ── Kilitleme kararı ──
-        // Yalnızca henüz kilitli değilken; bir ID son karelerde baskın çıkarsa
-        // (≥ VOTE_MIN) kabul et. Böylece tek kareye özgü yanlış okumalar geçmez.
-        if (lastIdRef.current === null) {
-          const counts = new Map<number, number>()
-          for (const v of buf) {
-            if (v >= 0) counts.set(v, (counts.get(v) ?? 0) + 1)
-          }
-          let bestId = -1
-          let bestCount = 0
-          for (const [id, c] of counts) {
-            if (c > bestCount) { bestId = id; bestCount = c }
-          }
-          if (bestId >= 0 && bestCount >= VOTE_MIN) {
-            handleDetection(bestId)
+        // ── Kilitleme / zaman aşımı kararı ──
+        // Yalnızca henüz kilitli değilken çalışır.
+        if (lastIdRef.current === null && !scanTimedOutRef.current) {
+          const elapsed = performance.now() - scanStartRef.current
+
+          if (elapsed >= GIVEUP_AFTER_MS) {
+            // 15 sn doldu, hâlâ kilit yok → bulunamadı
+            scanTimedOutRef.current = true
+            setScanTimedOut(true)
+            setScanning(false)
+          } else {
+            // İlk RELAX_AFTER_MS sıkı (7/4), sonrası gevşek (4/2)
+            const phase = elapsed < RELAX_AFTER_MS ? VOTE_STRICT : VOTE_RELAXED
+            const recent = buf.slice(Math.max(0, buf.length - phase.window))
+            const counts = new Map<number, number>()
+            for (const v of recent) {
+              if (v >= 0) counts.set(v, (counts.get(v) ?? 0) + 1)
+            }
+            let bestId = -1
+            let bestCount = 0
+            for (const [id, c] of counts) {
+              if (c > bestCount) { bestId = id; bestCount = c }
+            }
+            if (bestId >= 0 && bestCount >= phase.min) {
+              handleDetection(bestId)
+            }
           }
         }
       }).finally(() => {
@@ -266,6 +314,9 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
   const resetScan = () => {
     lastIdRef.current = null
     recentIdsRef.current = []
+    scanStartRef.current = performance.now()
+    scanTimedOutRef.current = false
+    setScanTimedOut(false)
     setFoundPart(undefined)
     setLastId(null)
     setScanning(true)
@@ -363,6 +414,19 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           </>
         )}
       </div>
+
+      {/* Zaman aşımı — 15 sn'de kilit yok */}
+      {scanTimedOut && (
+        <div className="bg-neutral-900 border border-amber-900 rounded-xl p-4 space-y-3">
+          <p className="text-amber-400 text-sm">{t.timeout}</p>
+          <button
+            onClick={resetScan}
+            className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg text-sm font-medium"
+          >
+            {t.scanNew}
+          </button>
+        </div>
+      )}
 
       {/* Tespit sonucu */}
       {lastId !== null && (
