@@ -1,7 +1,7 @@
 /**
  * ArUco marker mesh üreticisi.
  * Önceden üretilmiş aruco_dict_4x4_50.json'dan bit pattern okur,
- * siyah hücreleri manifold-3d box'larına dönüştürür.
+ * siyah hücreleri manifold-3d frustum'larına (konik oyuk) dönüştürür.
  * NOT: 4x4_50 sözlüğü — kodlar arası mesafe yüksek, yanlış okumaya dayanıklı.
  */
 
@@ -16,7 +16,17 @@ export function getMarkerBits(id: number): number[][] {
 
 /**
  * Manifold boolean çıkarma için ArUco geometrisi üretir.
- * Sonuç: z=0'da ortalanmış, siyah hücrelerin birleşimi olan manifold nesnesi.
+ * Sonuç: z=0'da yüzey açıklığı olan, siyah hücrelerin birleşimi.
+ * Her hücre = alt yarı prizma (z ∈ [-depth, 0], temiz kesim payı)
+ *            + üst yarı KESİK PİRAMİT (z ∈ [0, depth], içe daralan).
+ *
+ * NEDEN konik (frustum) oyuk, dik duvarlı kutu değil:
+ *  1. Baskı: alt yüzeye gömülü markerda dik duvarlı cebin tavanı tam hücre
+ *     genişliğinde köprülenir → sarkma/iplik oyuğu doldurur (okuma bozulur),
+ *     derin oymada yazıcı fail verir. Eğimli duvar kendi kendini taşır,
+ *     kalan köprü açıklığı ~hücrenin %40'ına düşer.
+ *  2. Okuma: eğimli duvarlar geniş açıdan gelen ışığı da gölgeler →
+ *     tek renk gravürde kontrast alanı büyür.
  *
  * Kullanım:
  *   const aruco = await generateArucoManifold(markerId, sizeInMm, depthInMm)
@@ -33,7 +43,20 @@ export async function generateArucoManifold(
   const cellSize = size / 6
   const offset = size / 2
 
-  // Boş başlat
+  // 1.001 faktörü: komşu siyah hücreler kesin ÇAKIŞSIN diye hafif büyütme.
+  // (Eski 0.999 küçültme komşu hücreler arasında mikron-mertebesi duvar
+  // bırakıyordu; slicer bunu iplik/artefakta çeviriyordu.)
+  const w = cellSize * 1.001
+  const half = w / 2
+  const square: Array<[number, number]> = [
+    [-half, -half], [half, -half], [half, half], [-half, half],
+  ]
+
+  // Duvar pahı: her kenardan içe daralma. depth ile sınırlı (≈45°'e kadar),
+  // ama tavan köprüsü hücrenin %40'ından dar olmasın diye %30 ile kırpılır.
+  const inset = Math.min(depth, cellSize * 0.3)
+  const topScale = Math.max(0.05, (w - 2 * inset) / w)
+
   let result: any = null
 
   for (let row = 0; row < 6; row++) {
@@ -43,14 +66,13 @@ export async function generateArucoManifold(
       const cx = col * cellSize + cellSize / 2 - offset
       const cy = -(row * cellSize + cellSize / 2 - offset) // Y eksenini çevir
 
-      // Kutuyu z merkezli oluştur; oymada tam kesilmesi için depth*2 yükseklik
-      // 0.999 faktörü: bitişik hücrelerde tam yüzey çakışmasını önler
-      const box = Manifold.cube(
-        [cellSize * 0.999, cellSize * 0.999, depth * 2],
-        true // merkezli
-      )
-      const placed = box.translate([cx, cy, 0])
-      result = result ? result.add(placed) : placed
+      // Üst yarı: yüzeyde (z=0) tam genişlik → z=depth'te daralmış (frustum)
+      const frustum = Manifold.extrude([square], depth, 0, 0, [topScale, topScale])
+      // Alt yarı: z ∈ [-depth, 0] tam genişlik prizma — yüzey altı temiz kesim payı
+      const prism = Manifold.extrude([square], depth).translate([0, 0, -depth])
+
+      const cell = frustum.add(prism).translate([cx, cy, 0])
+      result = result ? result.add(cell) : cell
     }
   }
 
