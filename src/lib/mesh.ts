@@ -314,11 +314,14 @@ export async function embedAruco(
     params.markerSize,
     params.etchDepth
   )
-  // Taban yüzeyine yerleştir: z_min'de ortalanmış (depth*2 yükseklik → her yöne taşıyor)
+  // Taban yüzeyine yerleştir: kutu merkezi z_min'de. Kutu depth*2 yükseklikte ve
+  // merkezli olduğundan [z_min - depth, z_min + depth] aralığına yayılır; parça
+  // (z >= z_min) ile kesişimi tam olarak depth kadar oyuk açar. (+etchDepth eklenirse
+  // oyuk 2*depth olur → çift gömme hatası.)
   const positioned = arucoManifold.translate([
     params.position[0],
     params.position[1],
-    zMin + params.etchDepth, // kutu z_min - depth ile z_min + depth arasında
+    zMin, // kutu merkezi tam taban yüzeyinde
   ])
 
   // 4. Boolean çıkarma
