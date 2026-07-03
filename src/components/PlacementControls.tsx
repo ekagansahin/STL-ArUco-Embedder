@@ -71,6 +71,10 @@ export default function PlacementControls({
         geometry: 'ArUco Geometrisi',
         size: 'Boyut', depth: 'Oyma Derinliği',
         advanced: 'Gelişmiş Ayarlar',
+        warnCell: (c: string) =>
+          `Hücre boyutu ${c} mm — 2 mm altı hem baskıda hem kamerada güvenilmez. Marker ≥ 12 mm önerilir.`,
+        warnQuiet: (q: string) =>
+          `Marker parça kenarına çok yakın (sessiz bölge < 1 hücre = ${q} mm). Tespit için etrafında en az 1 hücre düz alan bırakın.`,
       }
     : {
         orientation: 'Orientation',
@@ -80,10 +84,33 @@ export default function PlacementControls({
         geometry: 'ArUco Geometry',
         size: 'Size', depth: 'Etch Depth',
         advanced: 'Advanced Settings',
+        warnCell: (c: string) =>
+          `Cell size ${c} mm — below 2 mm is unreliable for both printing and camera detection. Marker ≥ 12 mm recommended.`,
+        warnQuiet: (q: string) =>
+          `Marker too close to part edge (quiet zone < 1 cell = ${q} mm). Leave at least 1 cell of flat area around it.`,
       }
 
   const xRange = bounds ? { min: bounds.minX, max: bounds.maxX } : { min: -100, max: 100 }
   const yRange = bounds ? { min: bounds.minY, max: bounds.maxY } : { min: -100, max: 100 }
+
+  // ── Okunabilirlik uyarıları ────────────────────────────────────────────
+  // Hücre boyutu: 6×6 grid (4×4 bit + kenarlık). 2 mm altı hücre hem baskıda
+  // (köprüleme/iplik) hem kamerada (piksel yetersizliği) güvenilmez.
+  const cellSize = markerSize / 6
+  const warnings: string[] = []
+  if (cellSize < 2) warnings.push(t.warnCell(cellSize.toFixed(2)))
+  // Sessiz bölge: ArUco tespiti markerın siyah kenarlığı etrafında açık renk
+  // düz alan ister. Bounding box'a göre yaklaşık kontrol (silüetten değil).
+  if (bounds) {
+    const half = markerSize / 2
+    const quiet = Math.min(
+      markerX - half - bounds.minX,
+      bounds.maxX - (markerX + half),
+      markerY - half - bounds.minY,
+      bounds.maxY - (markerY + half),
+    )
+    if (quiet < cellSize) warnings.push(t.warnQuiet(cellSize.toFixed(2)))
+  }
 
   return (
     <div className="space-y-5">
@@ -139,6 +166,18 @@ export default function PlacementControls({
             onChange={(v) => onChange('etchDepth', v)} />
         </div>
       </div>
+
+      {/* Okunabilirlik uyarıları */}
+      {warnings.length > 0 && (
+        <div className="space-y-2">
+          {warnings.map((w, i) => (
+            <div key={i}
+              className="text-xs text-amber-400 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2">
+              ⚠ {w}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
