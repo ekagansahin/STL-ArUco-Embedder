@@ -11,6 +11,8 @@
  *   3. /aruco/aruco_4x4_50.js → window.AR.DICTIONARIES['ARUCO_4X4_50']
  */
 
+import { detectWithOpenCV, preloadOpenCV } from './aruco-opencv'
+
 export interface DetectedMarker {
   id: number
   corners: Array<{ x: number; y: number }>
@@ -60,17 +62,21 @@ async function getDetector(): Promise<any> {
 
 // ─── Görüntü ön işleme ───────────────────────────────────────────────────────
 
-const MAX_DETECT_WIDTH = 640
+/**
+ * Tespit ölçekleri. 640: js-aruco2'nin güvenilir çalıştığı hızlı yol
+ * (yüksek çözünürlükte başarısız olabiliyor). 1024: uzak çekimde küçük
+ * markerlarda (10mm marker ≈ hücre başına <8px) 640 yetersiz kalıyor;
+ * ikinci geçiş daha fazla pikselle dener.
+ */
+const DETECT_WIDTHS = [640, 1024]
 
 /**
- * Tespit için görüntüyü MAX_DETECT_WIDTH'e küçültür.
- * js-aruco2 yüksek çözünürlüklü görüntülerde (Windows kameraları gibi)
- * başarısız olabiliyor; 640px'de güvenilir çalışıyor.
+ * Tespit için görüntüyü maxWidth'e küçültür.
  */
-function downscale(src: ImageData): { data: ImageData; scale: number } {
-  if (src.width <= MAX_DETECT_WIDTH) return { data: src, scale: 1 }
+function downscale(src: ImageData, maxWidth: number): { data: ImageData; scale: number } {
+  if (src.width <= maxWidth) return { data: src, scale: 1 }
 
-  const scale = MAX_DETECT_WIDTH / src.width
+  const scale = maxWidth / src.width
   const w = Math.round(src.width * scale)
   const h = Math.round(src.height * scale)
 
@@ -117,24 +123,27 @@ function scaleCorners(markers: DetectedMarker[], scale: number): DetectedMarker[
 /**
  * ImageData üzerinde ArUco marker tespiti yapar (async — ilk çağrıda script yükler).
  *
- * Tespit stratejisi — ön işleme × yön matrisi:
+ * Tespit stratejisi — ölçek × ön işleme × polarite × yön matrisi:
+ *   Ölçekler: 640 (hızlı yol) → 1024 (küçük/uzak marker)
  *   Ön işleme varyantları (ucuzdan pahalıya):
  *     1. Ham (yalnız normalize + downscale)
  *     2. Global kontrast germe (enhanceContrast)
  *     3. CLAHE — yerel adaptif kontrast (tek renk gravür markerlar için)
- *   Her varyant iki yönde denenir:
- *     a. Düz
- *     b. Yatay çevrilmiş (ayna)
+ *     4. Black-hat morfoloji — hücre ölçeğindeki koyu çukurları izole eder
+ *   Her varyant iki polaritede (normal + negatif) ve iki yönde (düz + ayna)
+ *   denenir.
  *
  * NEDEN matris: Baskıda marker parçanın alt yüzüne gömülü olduğundan kamera
  * onu her zaman AYNALI görür; js-aruco2 motoru içeride yalnızca 4 rotasyon
- * dener, aynayı denemez — bu yüzden kareyi biz çeviririz. Ayrıca tek renk
- * gravürde kontrast yalnızca oyukların gölgesinden gelir (çok düşük ve yerel),
- * bu yüzden ayna telafisi ile kontrast güçlendirmenin AYNI ANDA uygulanması
- * gerekir. Eski kodda flip yalnız ham kareye uygulanıyordu; flip + kontrast
- * kombinasyonu hiç denenmiyordu.
+ * dener, aynayı denemez — bu yüzden kareyi biz çeviririz. Tek renk gravürde
+ * kontrast yalnızca oyukların gölgesinden gelir (çok düşük ve yerel). Parlak
+ * yüzeylerde (PEI tabanı gibi) ışık açısına göre polarite TERS dönebilir:
+ * düz yüzey speküler karanlık, oyuklar açık görünür — negatif varyant bunu
+ * yakalar. Black-hat (morfolojik kapama − orijinal) ise hücre boyutundaki
+ * koyu bölgeleri arka plandan bağımsız çıkarır; kademeli aydınlatma ve zayıf
+ * gölge kontrastında CLAHE'den daha hedeflidir.
  *
- * İlk tutan varyant kazanır (kısa devre) → tipik karede ilk varyant döner,
+ * İlk tutan varyant kazanır (kısa devre) → tipik karede ilk varyantlar döner,
  * ekstra maliyet olmaz. Aynalı yönde köşeler ham kare uzayına geri çevrilir
  * (x' = width - x); ID zaten doğru çıkar.
  *
@@ -148,33 +157,59 @@ export async function detectMarkers(imageData: ImageData): Promise<DetectedMarke
 
     // Alpha önce normalize et, sonra downscale — sıra önemli
     const normalized = normalizeAlpha(imageData)
-    const { data: scaled, scale } = downscale(normalized)
 
-    // Ön işleme varyantları — tembel değil, sırayla üretilir ki gereksiz
-    // pahalı işlem (CLAHE) erken tutanda hiç çalışmasın.
-    const variantFns: Array<(img: ImageData) => ImageData> = [
-      (img) => img,          // ham
-      enhanceContrast,       // global germe
-      clahe,                 // yerel adaptif kontrast
-    ]
+    // ── Birincil yol: OpenCV ArucoDetector (hazırsa) ──────────────────────
+    // Adaptif eşik taraması + subpixel köşe + detectInvertedMarker.
+    // Düşük kontrastlı gravürde js-aruco2'den kat kat güçlü. 1280px'e kadar
+    // çözünürlük bırakılır (küçük marker için piksel gerekir). null dönerse
+    // (wasm henüz yüklenmedi/başarısız) aşağıdaki js-aruco2 matrisi devrede.
+    {
+      const { data: cvScaled, scale: cvScale } = downscale(normalized, 1280)
+      const cvResult = detectWithOpenCV(cvScaled)
+      if (cvResult && cvResult.length > 0) return scaleCorners(cvResult, cvScale)
+    }
 
-    for (const makeVariant of variantFns) {
-      const variant = makeVariant(scaled)
+    // ── Fallback: js-aruco2 matrisi ───────────────────────────────────────
+    for (const maxWidth of DETECT_WIDTHS) {
+      const { data: scaled, scale } = downscale(normalized, maxWidth)
 
-      // a. Düz
-      const direct: DetectedMarker[] = det.detect(variant)
-      if (direct.length > 0) return scaleCorners(direct, scale)
+      // Ön işleme varyantları — tembel değil, sırayla üretilir ki gereksiz
+      // pahalı işlem (CLAHE, black-hat) erken tutanda hiç çalışmasın.
+      const variantFns: Array<(img: ImageData) => ImageData> = [
+        (img) => img,          // ham
+        enhanceContrast,       // global germe
+        clahe,                 // yerel adaptif kontrast
+        blackHat,              // morfolojik çukur çıkarımı
+      ]
 
-      // b. Aynalı — köşeleri ham kare uzayına geri çevir (x' = width - x)
-      const flipped = flipHorizontal(variant)
-      const mirrored: DetectedMarker[] = det.detect(flipped)
-      if (mirrored.length > 0) {
-        const unflipped = mirrored.map(m => ({
-          id: m.id,
-          corners: m.corners.map(c => ({ x: variant.width - c.x, y: c.y })),
-        }))
-        return scaleCorners(unflipped, scale)
+      for (const makeVariant of variantFns) {
+        const variant = makeVariant(scaled)
+
+        for (const polarize of [
+          (img: ImageData) => img,  // normal
+          invert,                   // negatif — ters polarite (parlak yüzey)
+        ]) {
+          const polarized = polarize(variant)
+
+          // a. Düz
+          const direct: DetectedMarker[] = det.detect(polarized)
+          if (direct.length > 0) return scaleCorners(direct, scale)
+
+          // b. Aynalı — köşeleri ham kare uzayına geri çevir (x' = width - x)
+          const flipped = flipHorizontal(polarized)
+          const mirrored: DetectedMarker[] = det.detect(flipped)
+          if (mirrored.length > 0) {
+            const unflipped = mirrored.map(m => ({
+              id: m.id,
+              corners: m.corners.map(c => ({ x: polarized.width - c.x, y: c.y })),
+            }))
+            return scaleCorners(unflipped, scale)
+          }
+        }
       }
+
+      // Kaynak zaten bu ölçekten küçükse büyük ölçeği denemenin anlamı yok
+      if (normalized.width <= maxWidth) break
     }
 
     return []
@@ -205,8 +240,11 @@ function flipHorizontal(src: ImageData): ImageData {
 /**
  * aruco script'lerini ön-yükle. Promise döndürür: çağıran yükleme
  * başarısını/başarısızlığını izleyebilir (UI'da hata göstermek için).
+ * OpenCV wasm yüklemesi de arka planda başlatılır (bloklamaz);
+ * hazır olana kadar js-aruco2 çalışır.
  */
 export function preloadAruco(): Promise<void> {
+  preloadOpenCV()
   return ensureLoaded()
 }
 
@@ -236,6 +274,85 @@ function enhanceContrast(src: ImageData): ImageData {
   }
 
   return new ImageData(data, src.width, src.height)
+}
+
+/**
+ * Negatif — RGB kanallarını ters çevirir (alpha korunur).
+ * Parlak/speküler yüzeylerde oyuklar arka plandan AÇIK görünebilir;
+ * detektör siyah hücre beklediği için polarite çevirisi gerekir.
+ */
+function invert(src: ImageData): ImageData {
+  const data = new Uint8ClampedArray(src.data)
+  for (let i = 0; i < data.length; i += 4) {
+    data[i]     = 255 - data[i]
+    data[i + 1] = 255 - data[i + 1]
+    data[i + 2] = 255 - data[i + 2]
+  }
+  return new ImageData(data, src.width, src.height)
+}
+
+/**
+ * Black-hat morfolojisi: closing(luma) − luma.
+ * Yapı elemanından (kare, yarıçap ≈ hücre boyutu) KÜÇÜK koyu bölgeleri —
+ * yani gravür oyuklarını — aydınlatma gradyanından bağımsız izole eder.
+ * Çıktı: çukurlar siyah, arka plan beyaz (normalize + ters çevrilmiş),
+ * grayscale ImageData.
+ *
+ * Dilate/erode ayrıştırılabilir (yatay + dikey 1D geçiş) → O(w·h·r).
+ * 640px'de r≈8 ile ~10ms mertebesi.
+ */
+function blackHat(src: ImageData): ImageData {
+  const { width: w, height: h, data } = src
+  const radius = Math.max(4, Math.round(w / 80)) // 640→8, 1024→13
+
+  // Luma
+  const lum = new Uint8Array(w * h)
+  for (let p = 0, i = 0; p < lum.length; p++, i += 4) {
+    lum[p] = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114)
+  }
+
+  // Ayrıştırılabilir morfoloji: 1D pencere min/max, önce satır sonra sütun
+  const pass = (input: Uint8Array, horizontal: boolean, isMax: boolean): Uint8Array => {
+    const out = new Uint8Array(w * h)
+    const outer = horizontal ? h : w
+    const inner = horizontal ? w : h
+    for (let o = 0; o < outer; o++) {
+      for (let i = 0; i < inner; i++) {
+        let best = isMax ? 0 : 255
+        const lo = Math.max(0, i - radius)
+        const hi = Math.min(inner - 1, i + radius)
+        for (let k = lo; k <= hi; k++) {
+          const v = horizontal ? input[o * w + k] : input[k * w + o]
+          if (isMax ? v > best : v < best) best = v
+        }
+        if (horizontal) out[o * w + i] = best
+        else out[i * w + o] = best
+      }
+    }
+    return out
+  }
+
+  // closing = erode(dilate(x))
+  const dilated = pass(pass(lum, true, true), false, true)
+  const closed  = pass(pass(dilated, true, false), false, false)
+
+  // black-hat = closing − orijinal; normalize et
+  const bh = new Uint8Array(w * h)
+  let maxV = 1
+  for (let p = 0; p < bh.length; p++) {
+    const v = closed[p] - lum[p]
+    bh[p] = v > 0 ? v : 0
+    if (bh[p] > maxV) maxV = bh[p]
+  }
+
+  // Çukur → siyah, arka plan → beyaz (detektör siyah hücre bekler)
+  const out = new Uint8ClampedArray(data.length)
+  for (let p = 0, i = 0; p < bh.length; p++, i += 4) {
+    const v = 255 - Math.round((bh[p] / maxV) * 255)
+    out[i] = out[i + 1] = out[i + 2] = v
+    out[i + 3] = 255
+  }
+  return new ImageData(out, w, h)
 }
 
 /**
