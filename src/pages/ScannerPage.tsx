@@ -6,7 +6,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getPartByMarkerId, getAllParts } from '../lib/db'
-import { detectMarkers, preloadAruco } from '../lib/aruco-scanner'
+import { detectMarkers, preloadAruco, estimateSharpness, type RoiHint } from '../lib/aruco-scanner'
+import { openCVStatus } from '../lib/aruco-opencv'
 import type { Part } from '../lib/db'
 
 interface ScannerPageProps {
@@ -23,6 +24,22 @@ const VOTE_STRICT   = { window: 7, min: 4 }
 const VOTE_RELAXED  = { window: 4, min: 2 }
 const RELAX_AFTER_MS  = 3000   // 3 sn sonra gevşe
 const GIVEUP_AFTER_MS = 15000  // 15 sn sonra bulunamadı
+
+// Tespit hızı sınırı: RAF 60fps çalışır ama tespit (özellikle OpenCV +
+// varyant matrisi) her karede gerekmez; ~10fps yeterli ve ana iş parçacığını
+// rahatlatır — video ve overlay akıcı kalır.
+const MIN_DETECT_INTERVAL_MS = 100
+
+// ROI takibi: marker bulununca bbox bu çarpanla genişletilip sonraki
+// karelerde önce yalnız o bölge taranır. Üst üste bu kadar kaçırmada tam
+// kareye dönülür.
+const ROI_EXPAND = 1.8
+const ROI_MAX_MISSES = 10
+
+// Bulanıklık: marker bu süredir yoksa ve Laplacian varyansı eşiğin
+// altındaysa "bulanık" ipucu gösterilir.
+const BLUR_HINT_AFTER_MS = 2500
+const BLUR_THRESHOLD = 40
 
 export default function ScannerPage({ lang }: ScannerPageProps) {
   const videoRef   = useRef<HTMLVideoElement>(null)
@@ -47,6 +64,13 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
   // scanTimedOutRef: 15 sn doldu ve kilit yok → RAF döngüsündeki stale closure
   // sorununu önlemek için ref (state ile birlikte tutulur).
   const scanTimedOutRef = useRef(false)
+  // roiRef: son başarılı tespitin genişletilmiş bbox'ı — sonraki karelerde
+  // önce burası taranır (hızlı yol). misses ile tam kareye dönüş sayılır.
+  const roiRef = useRef<(RoiHint & { misses: number }) | null>(null)
+  // lastDetectAtRef: tespit hız sınırı (MIN_DETECT_INTERVAL_MS)
+  const lastDetectAtRef = useRef(0)
+  // blurCounterRef: keskinlik ölçümü her karede değil, seyrek yapılır
+  const blurCounterRef = useRef(0)
 
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
@@ -55,6 +79,12 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
   const [scanning, setScanning] = useState(false)
   const [scanTimedOut, setScanTimedOut] = useState(false)
   const [engineError, setEngineError] = useState<string | null>(null)
+  const [cvStatus, setCvStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
+  const [blurry, setBlurry] = useState(false)
+  const [torchSupported, setTorchSupported] = useState(false)
+  const [torchOn, setTorchOn] = useState(false)
+  const [zoomCaps, setZoomCaps] = useState<{ min: number; max: number; step: number } | null>(null)
+  const [zoom, setZoom] = useState(1)
 
   const t = lang === 'TR'
     ? {
@@ -76,6 +106,12 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         camOff:     'Kamera kapalı',
         timeout:    '⚠️ 15 saniyede marker bulunamadı. Işığı/açıyı değiştirip tekrar deneyin.',
         engineError:'ArUco motoru yüklenemedi:',
+        cvLoading:  'Gelişmiş motor yükleniyor…',
+        cvReady:    'Gelişmiş motor aktif (OpenCV)',
+        cvFailed:   'Temel motor (OpenCV yüklenemedi)',
+        blurryHint: '🔍 Görüntü bulanık görünüyor — parçayı kameranın odak mesafesine getirin (webcamlerde ~15-25 cm).',
+        torch:      '🔦 Işık',
+        zoomLabel:  'Yakınlaştırma',
       }
     : {
         title:      'ArUco Camera Scanner',
@@ -96,6 +132,12 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         camOff:     'Camera off',
         timeout:    '⚠️ No marker found in 15 seconds. Adjust lighting/angle and try again.',
         engineError:'Failed to load ArUco engine:',
+        cvLoading:  'Enhanced engine loading…',
+        cvReady:    'Enhanced engine active (OpenCV)',
+        cvFailed:   'Basic engine (OpenCV failed to load)',
+        blurryHint: '🔍 Image looks blurry — move the part to your camera\'s focus distance (~15-25 cm for webcams).',
+        torch:      '🔦 Torch',
+        zoomLabel:  'Zoom',
       }
 
   // ─── Kamera ────────────────────────────────────────────────────────────────
@@ -114,8 +156,11 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       allowedIdsRef.current = new Set()
     }
     try {
+      // 1080p iste: OpenCV yolu yüksek çözünürlüğü kaldırıyor ve küçük
+      // (10mm) markerlarda hücre başına piksel kritik. Kamera veremezse
+      // tarayıcı en yakın modu seçer.
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       })
       if (videoRef.current) {
@@ -123,14 +168,55 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         await videoRef.current.play()
       }
       streamRef.current = stream
+
+      // ── Kamera yetenekleri: sürekli odak + torch + zoom ──
+      // Standart TS tipleri torch/zoom/focusMode içermez → any.
+      const track = stream.getVideoTracks()[0] as any
+      try {
+        const caps = track.getCapabilities?.() ?? {}
+        // Sürekli otomatik odak — yakın mesafede netlik için (destekleyen
+        // kameralarda; başarısızlık sessizce yutulur)
+        if (Array.isArray(caps.focusMode) && caps.focusMode.includes('continuous')) {
+          track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {})
+        }
+        setTorchSupported(caps.torch === true)
+        setTorchOn(false)
+        if (caps.zoom && typeof caps.zoom.min === 'number' && caps.zoom.max > caps.zoom.min) {
+          setZoomCaps({ min: caps.zoom.min, max: caps.zoom.max, step: caps.zoom.step || 0.1 })
+          setZoom(track.getSettings?.()?.zoom ?? caps.zoom.min)
+        } else {
+          setZoomCaps(null)
+        }
+      } catch { /* yetenek okunamadı — kontroller gizli kalır */ }
+
       // Tarama saatini kamera hazır olduğunda başlat
       scanStartRef.current = performance.now()
       scanTimedOutRef.current = false
+      roiRef.current = null
+      lastDetectAtRef.current = 0
+      setBlurry(false)
       setScanTimedOut(false)
       setCameraActive(true)
     } catch {
       setCameraError(t.noCamera)
     }
+  }
+
+  /** Torch (fener) aç/kapa — destekleyen kameralarda. */
+  const toggleTorch = async () => {
+    const track = streamRef.current?.getVideoTracks()[0] as any
+    if (!track) return
+    try {
+      await track.applyConstraints({ advanced: [{ torch: !torchOn }] })
+      setTorchOn(v => !v)
+    } catch { /* desteklenmiyor */ }
+  }
+
+  /** Optik/dijital zoom uygula — destekleyen kameralarda. */
+  const applyZoom = (v: number) => {
+    setZoom(v)
+    const track = streamRef.current?.getVideoTracks()[0] as any
+    track?.applyConstraints?.({ advanced: [{ zoom: v }] }).catch(() => {})
   }
 
   const stopCamera = useCallback(() => {
@@ -146,6 +232,11 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     if (ol) ol.getContext('2d')?.clearRect(0, 0, ol.width, ol.height)
     recentIdsRef.current = []
     scanTimedOutRef.current = false
+    roiRef.current = null
+    setBlurry(false)
+    setTorchSupported(false)
+    setTorchOn(false)
+    setZoomCaps(null)
     setScanTimedOut(false)
     setCameraActive(false)
     setScanning(false)
@@ -157,6 +248,17 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     preloadAruco()
       .then(() => setEngineError(null))
       .catch((e) => setEngineError(String(e?.message ?? e)))
+  }, [])
+
+  // OpenCV motor durumunu izle (yükleme arka planda sürer) — chip için.
+  useEffect(() => {
+    if (openCVStatus() !== 'loading') { setCvStatus(openCVStatus()); return }
+    const iv = setInterval(() => {
+      const s = openCVStatus()
+      setCvStatus(s)
+      if (s !== 'loading') clearInterval(iv)
+    }, 500)
+    return () => clearInterval(iv)
   }, [])
 
   // Kamera durduğunda temizle
@@ -189,9 +291,16 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       return
     }
 
-    // Bir önceki tespit sürüyorsa VEYA zaman aşımına düşüldüyse bu kareyi atla
-    if (!detectingRef.current && !scanTimedOutRef.current) {
+    // Bir önceki tespit sürüyorsa, hız sınırına takıldıysak VEYA zaman
+    // aşımına düşüldüyse bu kareyi atla
+    const now = performance.now()
+    if (
+      !detectingRef.current &&
+      !scanTimedOutRef.current &&
+      now - lastDetectAtRef.current >= MIN_DETECT_INTERVAL_MS
+    ) {
       detectingRef.current = true
+      lastDetectAtRef.current = now
 
       canvas.width  = w
       canvas.height = h
@@ -199,8 +308,37 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       ctx.drawImage(video, 0, 0, w, h)
       const imageData = ctx.getImageData(0, 0, w, h)
 
+      // ROI ipucu: önceki karede marker bulunduysa önce o bölge taranır
+      const roi = roiRef.current
+
       // Async detection — RAF döngüsü bloklanmaz
-      detectMarkers(imageData).then((markers) => {
+      detectMarkers(imageData, roi).then((markers) => {
+        // ── ROI takibini güncelle ──
+        if (markers.length > 0) {
+          const xs = markers[0].corners.map(c => c.x)
+          const ys = markers[0].corners.map(c => c.y)
+          const bx = Math.min(...xs), by = Math.min(...ys)
+          const bw = Math.max(...xs) - bx, bh = Math.max(...ys) - by
+          const mx = (bw * (ROI_EXPAND - 1)) / 2
+          const my = (bh * (ROI_EXPAND - 1)) / 2
+          roiRef.current = { x: bx - mx, y: by - my, w: bw + 2 * mx, h: bh + 2 * my, misses: 0 }
+          if (blurCounterRef.current !== 0) blurCounterRef.current = 0
+          setBlurry(false)
+        } else if (roiRef.current) {
+          roiRef.current.misses++
+          if (roiRef.current.misses > ROI_MAX_MISSES) roiRef.current = null
+        }
+
+        // ── Bulanıklık ipucu ──
+        // Marker bir süredir yoksa arada bir keskinliğe bak (her ~15 tespit);
+        // düşükse kullanıcıya odak mesafesi ipucu göster.
+        if (markers.length === 0 && lastIdRef.current === null) {
+          const elapsed = performance.now() - scanStartRef.current
+          if (elapsed > BLUR_HINT_AFTER_MS && ++blurCounterRef.current >= 15) {
+            blurCounterRef.current = 0
+            setBlurry(estimateSharpness(imageData) < BLUR_THRESHOLD)
+          }
+        }
         // Overlay boyutunu video ile eşitle
         if (overlay && (overlay.width !== w || overlay.height !== h)) {
           overlay.width  = w
@@ -316,6 +454,9 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     recentIdsRef.current = []
     scanStartRef.current = performance.now()
     scanTimedOutRef.current = false
+    roiRef.current = null
+    blurCounterRef.current = 0
+    setBlurry(false)
     setScanTimedOut(false)
     setFoundPart(undefined)
     setLastId(null)
@@ -338,6 +479,16 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           {t.engineError} <span className="font-mono text-xs">{engineError}</span>
         </div>
       )}
+
+      {/* Gelişmiş motor (OpenCV) durumu */}
+      <div className="flex items-center gap-2 text-xs">
+        <span className={`w-2 h-2 rounded-full ${
+          cvStatus === 'ready' ? 'bg-green-400' : cvStatus === 'loading' ? 'bg-yellow-400 animate-pulse' : 'bg-neutral-500'
+        }`} />
+        <span className={cvStatus === 'ready' ? 'text-green-400' : 'text-neutral-500'}>
+          {cvStatus === 'ready' ? t.cvReady : cvStatus === 'loading' ? t.cvLoading : t.cvFailed}
+        </span>
+      </div>
 
       {/* Video + overlay */}
       <div
@@ -411,9 +562,40 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
                 {t.scanNew}
               </button>
             )}
+            {torchSupported && (
+              <button
+                onClick={toggleTorch}
+                className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                  torchOn ? 'bg-yellow-600 hover:bg-yellow-500 text-black' : 'bg-neutral-700 hover:bg-neutral-600 text-white'
+                }`}
+              >
+                {t.torch}
+              </button>
+            )}
+            {zoomCaps && (
+              <label className="flex items-center gap-2 text-xs text-neutral-400">
+                {t.zoomLabel}
+                <input
+                  type="range"
+                  min={zoomCaps.min}
+                  max={zoomCaps.max}
+                  step={zoomCaps.step}
+                  value={zoom}
+                  onChange={(e) => applyZoom(parseFloat(e.target.value))}
+                  className="w-28 accent-blue-500 cursor-pointer"
+                />
+              </label>
+            )}
           </>
         )}
       </div>
+
+      {/* Bulanıklık ipucu */}
+      {cameraActive && blurry && lastId === null && !scanTimedOut && (
+        <div className="text-sm px-4 py-2.5 rounded-xl border bg-sky-950/40 border-sky-900 text-sky-300">
+          {t.blurryHint}
+        </div>
+      )}
 
       {/* Zaman aşımı — 15 sn'de kilit yok */}
       {scanTimedOut && (

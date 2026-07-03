@@ -127,6 +127,13 @@ export function isOpenCVFailed(): boolean {
   return _loadFailed
 }
 
+/** UI göstergesi için motor durumu. */
+export function openCVStatus(): 'loading' | 'ready' | 'failed' {
+  if (_loadFailed) return 'failed'
+  if (_cv) return 'ready'
+  return 'loading'
+}
+
 /** MatVector köşelerini DetectedMarker[]'a çevir. */
 function extractMarkers(corners: any, ids: any): DetectedMarker[] {
   const out: DetectedMarker[] = []

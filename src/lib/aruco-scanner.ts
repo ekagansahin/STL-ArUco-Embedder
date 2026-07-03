@@ -18,6 +18,14 @@ export interface DetectedMarker {
   corners: Array<{ x: number; y: number }>
 }
 
+/** ROI ipucu — ham kare koordinatlarında dikdörtgen. */
+export interface RoiHint {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
 // ─── Script yükleme ───────────────────────────────────────────────────────────
 
 let _loadPromise: Promise<void> | null = null
@@ -151,7 +159,30 @@ function scaleCorners(markers: DetectedMarker[], scale: number): DetectedMarker[
  * browser compositing'i alpha < 255 olan piksellerin RGB kanallarını
  * bozabilir (Windows GPU sürücülerinde yaygın).
  */
-export async function detectMarkers(imageData: ImageData): Promise<DetectedMarker[]> {
+export async function detectMarkers(
+  imageData: ImageData,
+  roi?: RoiHint | null,
+): Promise<DetectedMarker[]> {
+  // ── ROI hızlı yolu ──────────────────────────────────────────────────────
+  // Bir önceki karede marker bulunduysa çağıran genişletilmiş bbox'ı geçer;
+  // önce yalnız o bölge taranır (küçük görüntü → tüm varyant matrisi çok
+  // daha ucuz, downscale kaybı yok). Bulunamazsa tam kareye düşülür.
+  if (roi) {
+    const cropped = cropImageData(imageData, roi)
+    if (cropped) {
+      const inRoi = await detectMarkersFull(cropped.data)
+      if (inRoi.length > 0) {
+        return inRoi.map(m => ({
+          id: m.id,
+          corners: m.corners.map(c => ({ x: c.x + cropped.x, y: c.y + cropped.y })),
+        }))
+      }
+    }
+  }
+  return detectMarkersFull(imageData)
+}
+
+async function detectMarkersFull(imageData: ImageData): Promise<DetectedMarker[]> {
   try {
     const det = await getDetector()
 
@@ -216,6 +247,61 @@ export async function detectMarkers(imageData: ImageData): Promise<DetectedMarke
   } catch {
     return []
   }
+}
+
+/**
+ * ImageData'dan dikdörtgen kırpar. Sınırlar kareye kelepçelenir;
+ * kalan alan 64px'ten küçükse null (tespit için anlamsız).
+ */
+function cropImageData(
+  src: ImageData,
+  roi: RoiHint,
+): { data: ImageData; x: number; y: number } | null {
+  const x0 = Math.max(0, Math.floor(roi.x))
+  const y0 = Math.max(0, Math.floor(roi.y))
+  const x1 = Math.min(src.width, Math.ceil(roi.x + roi.w))
+  const y1 = Math.min(src.height, Math.ceil(roi.y + roi.h))
+  const w = x1 - x0
+  const h = y1 - y0
+  if (w < 64 || h < 64) return null
+
+  const out = new Uint8ClampedArray(w * h * 4)
+  for (let y = 0; y < h; y++) {
+    const srcOff = ((y0 + y) * src.width + x0) * 4
+    out.set(src.data.subarray(srcOff, srcOff + w * 4), y * w * 4)
+  }
+  return { data: new ImageData(out, w, h), x: x0, y: y0 }
+}
+
+/**
+ * Keskinlik ölçümü — Laplacian varyansı.
+ * Görüntü ~320px'e örneklenir, 4-komşu Laplacian'ın varyansı döner.
+ * Düşük değer = bulanık (webcam odak sorunu). Eşik içerik-bağımlıdır;
+ * ScannerPage yalnız "marker bulunamıyor VE keskinlik düşük" iken
+ * ipucu gösterir (yanlış alarm en aza iner).
+ */
+export function estimateSharpness(src: ImageData): number {
+  const step = Math.max(1, Math.round(src.width / 320))
+  const w = Math.floor(src.width / step)
+  const h = Math.floor(src.height / step)
+  const g = new Float32Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * step * src.width + x * step) * 4
+      g[y * w + x] = src.data[i] * 0.299 + src.data[i + 1] * 0.587 + src.data[i + 2] * 0.114
+    }
+  }
+  let sum = 0, sum2 = 0, n = 0
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const p = y * w + x
+      const lap = 4 * g[p] - g[p - 1] - g[p + 1] - g[p - w] - g[p + w]
+      sum += lap; sum2 += lap * lap; n++
+    }
+  }
+  if (n === 0) return 0
+  const mean = sum / n
+  return sum2 / n - mean * mean
 }
 
 /**
