@@ -1,28 +1,45 @@
 # STL ArUco Embedder
 
-> A browser-based PWA that carves ArUco fiducial markers into STL files and scans them back with a camera — fully offline, no server, no login.
+> A browser-based PWA that carves ArUco fiducial markers into STL files and scans them back with a webcam — fully offline, no server, no login.
 
-![Demo](sample/Benchy_modified.jpeg)
+**🔗 Live app: https://ekagansahin.github.io/STL-ArUco-Embedder/**
+
+<!-- TODO: add a demo image here once captured, e.g. ![Demo](sample/screenshots/demo.png) -->
 
 ---
 
 ## Overview
 
-3D-printed parts are difficult to identify once removed from the printer. Labels fall off, similar-looking parts get mixed up, and tracking material or print settings after the fact is tedious.
+3D-printed parts are hard to identify once they leave the printer. Labels fall off, similar parts get mixed up, and recovering the material or print settings after the fact is tedious.
 
-**STL ArUco Embedder** solves this by permanently embedding an ArUco marker into the bottom face of any STL file before printing. The marker is carved directly into the geometry using boolean subtraction. After printing, a phone camera can scan the part and instantly retrieve its name, material, notes, and creation date from a local database.
+**STL ArUco Embedder** solves this by permanently carving an ArUco marker into the base of any STL before printing — the marker is boolean-subtracted directly from the geometry. After printing, a webcam scans the part and instantly retrieves its name, material, notes, and creation date from a local database.
 
-Everything runs in the browser. No data is sent anywhere.
+Everything runs in the browser. No data ever leaves the device.
+
+> **Desktop only.** Marker placement relies on mouse interaction and a WebGL 3D preview, so the app targets **Windows or macOS** computers. Opening it on a phone or tablet shows a notice asking the user to switch to a computer.
 
 ---
 
-## Screenshots
+## Marker specification
 
-| Embedder | Scanner | Library |
-|---|---|---|
-| *(screenshot)* | *(screenshot)* | *(screenshot)* |
+The current build uses a **compact, high-distance 4×4 dictionary** chosen specifically for reliable reading off single-colour 3D prints.
 
-> **Contributing screenshots:** Run the app locally, take screenshots of each tab, and open a PR adding them to `sample/screenshots/`.
+| Property | Value |
+|---|---|
+| Dictionary | `ARUCO_4X4_50` (custom, 50 markers) |
+| Marker IDs | **0 – 49** |
+| Grid | 6 × 6 cells (4 × 4 data + 1-cell black border) |
+| Default size | **10 × 10 mm²** (square, side adjustable 7.2 – 50 mm) |
+| Default etch depth | **0.8 mm** (adjustable 0.2 – 2.0 mm) |
+| Placement | Carved (subtracted) into the base face of the part |
+
+### Why 4×4_50 instead of 4×4_1000?
+
+A 1000-marker 4×4 dictionary packs so many codes into 16 data bits that the **minimum inter-marker Hamming distance is only 2** — a single misread bit (from low contrast, blur, or a mirrored surface) can flip one valid ID straight into *another* valid ID. That is the classic "it reads, but reads the wrong number" failure.
+
+This build instead selects the **50 most mutually-distant codes** from that same code space, re-indexed to IDs 0–49. The result is a **minimum rotation-aware Hamming distance of 4**, so a single-bit error can no longer be confused with another marker. Combined with the scanner safeguards below, wrong reads are effectively eliminated.
+
+> **Reprint note:** parts printed with the older 4×4_1000 markers will **not** be recognised by the current scanner. Re-embed and reprint them with the new dictionary.
 
 ---
 
@@ -30,32 +47,45 @@ Everything runs in the browser. No data is sent anywhere.
 
 ### 1. Embed
 
-Upload any binary or ASCII STL file. The app analyses the mesh and suggests placement presets based on the geometry:
+Upload any binary or ASCII STL. The app analyses the mesh face normals and proposes placement presets automatically:
 
-- **Floor** — bottom face (recommended for flat-bottom parts)
-- **Top** — top face
-- **Bottom** — inverted bottom
+- **Base Center** — centres the marker on the largest flat surface (recommended for FFF printing)
+- **Alternative Center** — the next-largest flat surface
+- **Base Bottom-Left** — corner placement on the same surface
+- **Manual** — set orientation, position, size, and depth yourself
 
-You can also position and resize the marker manually using sliders. When you click **Embed ArUco & Download**, the app:
+A live 3D viewer (drag to rotate, right-drag to pan, scroll to zoom) plus a 2D top-view footprint let you position the marker precisely, with a warning if it falls outside the mesh bounds. Marker size is shown as **A × A mm²** to make clear it is a square of side A. When you click **Embed ArUco & Download**, the app:
 
-1. Rotates the mesh to the chosen orientation
-2. Generates the ArUco pattern for the next available ID (4×4, 1000-marker dictionary)
-3. Performs a boolean subtraction using [manifold-3d](https://github.com/elalish/manifold) (WASM) to carve the pattern into the surface
-4. Exports the result as a print-ready STL and saves both the original and print-ready files to IndexedDB
+1. Rotates the mesh to the chosen orientation and finds the base (lowest) face
+2. Generates the 6×6 pattern for the next available ID (0–49) from the `ARUCO_4X4_50` dictionary
+3. Performs a boolean subtraction with [manifold-3d](https://github.com/elalish/manifold) (WASM) to carve the black cells into the surface
+4. Exports a print-ready STL and saves both the original and print-ready files to IndexedDB
 
 ### 2. Scan
 
-Open the Scanner tab and point your camera at a printed part. The app reads frames in real time using [js-aruco2](https://github.com/nicolasalber/js-aruco2) and draws a green polygon around detected markers. On detection it queries the local database and displays the part's details.
+Open the Scanner tab and point your webcam at a printed part. Frames are decoded in real time with [js-aruco2](https://github.com/nicolasalber/js-aruco2). The camera preview is mirrored for natural control (move your hand right, it moves right on screen) while detection runs on the true, un-mirrored frame.
 
-Works with the rear camera on mobile devices.
+Reading a **carved, single-colour** marker is much harder than reading a printed black-on-white one — the only contrast comes from shadows in the recesses. The scanner therefore layers several safeguards:
+
+- **Preprocessing × orientation matrix.** Each frame is tried through `{ raw · global contrast stretch · CLAHE (local adaptive contrast) } × { normal · horizontally-flipped }`, first hit wins. This handles both the low, local contrast of engraved markers *and* the fact that a base-embedded marker is always seen mirrored. (js-aruco2 only tries the 4 rotations internally, never a mirror — so the flip is done here.)
+- **Registered-ID whitelist.** On camera start the set of marker IDs actually saved in the database is loaded; only those IDs are accepted. An unregistered read (e.g. a stray "136" that isn't in your library) is dropped and never counted.
+- **Time-tiered temporal voting.** An ID is only locked once it *dominates recent frames*, not on a single lucky frame:
+  - first **3 s** — strict: the same ID in **≥ 4 of the last 7** frames
+  - after 3 s — relaxed: **≥ 2 of the last 4** frames
+  - after **15 s** with no lock — the scanner stops and shows a "no marker found" message with a retry button
+- **Live overlay feedback.** The detection box is **green** when an ID is confirmed, **yellow** for a valid candidate still being voted on, and **red** for a marker that was read but is not in the database.
+
+On a confirmed detection the app queries the local database and shows the part's details.
+
+> **Tip:** keep a white quiet zone around the marker, and light it from the side/at an angle so the engraved cells cast shadows — grazing light dramatically improves contrast on single-colour prints.
 
 ### 3. Library
 
-All parts are stored locally in IndexedDB (via [Dexie.js](https://dexie.org/)). The Library tab shows all saved parts with options to:
+All parts are stored locally in IndexedDB via [Dexie.js](https://dexie.org/), so each computer keeps its own library. The Library tab lists every saved part with options to:
 
 - Download the original or print-ready STL for any part
-- Export the entire library as a ZIP (one folder per part + a `database.json` metadata file)
-- Import a previously exported ZIP on another device
+- Export the entire library as a ZIP (one folder per part plus a `database.json` metadata file)
+- Import a previously exported ZIP — this is how a library is moved between computers
 - Clear all data
 
 ---
@@ -69,10 +99,37 @@ All parts are stored locally in IndexedDB (via [Dexie.js](https://dexie.org/)). 
 | Bundler | Vite 8 (Rolldown) |
 | 3D rendering | Three.js r185 + OrbitControls |
 | Boolean subtraction | manifold-3d (WASM) |
-| ArUco detection | js-aruco2 (script-tag loaded, CJS-incompatible with Vite) |
+| ArUco detection | js-aruco2 (loaded via script tag; CJS-incompatible with Vite bundling) |
 | Local database | Dexie.js v4 (IndexedDB) |
 | ZIP export/import | JSZip |
 | PWA | vite-plugin-pwa + Workbox |
+
+The interface is bilingual (Turkish / English), toggled from the top bar.
+
+---
+
+## Project structure
+
+```
+public/aruco/
+  cv.js              # js-aruco2 computer-vision helpers
+  aruco.js           # js-aruco2 detector + dictionary base
+  aruco_4x4_50.js    # the 50-marker ARUCO_4X4_50 dictionary (scanner side)
+src/
+  assets/
+    aruco_dict_4x4_50.json   # 50 × 6×6 bit patterns (embedder side)
+  lib/
+    aruco.ts         # builds the 3D marker geometry from the bit patterns
+    aruco-scanner.ts # detection pipeline (preprocessing × orientation matrix)
+    mesh.ts          # STL analysis, placement presets, embed pipeline
+    manifold.ts      # manifold-3d WASM loader
+    export.ts        # STL export
+    db.ts            # Dexie / IndexedDB schema and helpers
+  components/        # Viewer3D, Footprint2D, PlacementControls, PresetCards, ...
+  pages/             # EmbedderPage, ScannerPage, LibraryPage
+```
+
+The scanner-side dictionary (`aruco_4x4_50.js`) and the embedder-side patterns (`aruco_dict_4x4_50.json`) are generated from the same source set, so the printed pattern and the decoder always agree.
 
 ---
 
@@ -80,8 +137,8 @@ All parts are stored locally in IndexedDB (via [Dexie.js](https://dexie.org/)). 
 
 ### Prerequisites
 
-- Node.js 18+
-- npm 9+
+- Node.js 20.19+ (22 or 24 recommended — CI builds on Node 24)
+- npm 10+
 
 ### Install & run
 
@@ -92,15 +149,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
-
-For mobile testing on the same network:
-
-```bash
-npm run dev -- --host
-```
-
-Then open the displayed network URL on your phone.
+Open the URL printed by Vite (served under the `/STL-ArUco-Embedder/` base path). Use a Windows or macOS computer with a webcam to test scanning.
 
 ### Build
 
@@ -108,10 +157,17 @@ Then open the displayed network URL on your phone.
 npm run build
 ```
 
-Output goes to `dist/`. Deploy to any static host.
+Output goes to `dist/`. The project is configured with `base: '/STL-ArUco-Embedder/'` for GitHub Pages, and a GitHub Actions workflow builds and deploys `dist/` automatically on every push to `main`.
 
 ---
 
+## Limitations & roadmap
+
+- **Single-colour, carved markers are inherently low-contrast.** The scanner compensates a lot in software, but a filament colour-change at the engrave layer (e.g. `M600`), a deeper etch, or a larger marker will always read more reliably.
+- **50 IDs.** The dictionary intentionally trades capacity for robustness; if more than 50 distinct parts are ever needed, the dictionary can be regenerated at a larger size (at the cost of reprinting).
+- **Possible next steps:** swap js-aruco2 for the OpenCV.js ArUco detector (adaptive-threshold sweep, sub-pixel corner refinement, tunable error correction) for even stronger reads.
+
+---
 
 ## License
 
