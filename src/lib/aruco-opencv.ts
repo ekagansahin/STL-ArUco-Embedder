@@ -9,10 +9,17 @@
  * oyuklar) motor içinde dener. Sentetik testte Δ=20 kontrastta tespit
  * doğrulandı.
  *
- * Maliyet: ~10 MB wasm. Bu yüzden:
+ * Maliyet: ~13 MB script (wasm gömülü). Bu yüzden:
  *  - Tembel yüklenir (ilk çağrıda, arka planda)
  *  - Yüklenene kadar / yükleme başarısız olursa js-aruco2 devrede kalır
  *    (aruco-scanner.ts fallback matrisi)
+ *
+ * YÜKLEME YOLU: public/opencv/opencv.js'ten dinamik <script> tag ile —
+ * js-aruco2 ile AYNI desen. npm modülü (@techstark/opencv-js) Vite/rolldown
+ * CJS interop'undan bundle edilince tarayıcıda yüklenemiyordu (sahada
+ * sürekli "OpenCV yüklenemedi"); js-aruco2 da aynı sebeple public/'te.
+ * Dosya: node_modules/@techstark/opencv-js/dist/opencv.js kopyası
+ * (v5.0.0-release.1). Güncellerken yeniden kopyala.
  *
  * Ayna: baskıda marker alt yüzeye gömülü olduğundan kamera AYNALI görür.
  * detectInvertedMarker polariteyi çözer ama aynayı ÇÖZMEZ (aynalı desen
@@ -28,24 +35,55 @@ let _loadStarted = false
 let _loadFailed = false
 let _detector: any = null
 
-/** OpenCV wasm yüklemesini başlat (idempotent, arka plan). */
+const LOAD_TIMEOUT_MS = 60_000 // 13MB script + wasm derleme — yavaş ağda cömert davran
+
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`)
+    if (existing) { resolve(); return }
+    const s = document.createElement('script')
+    s.src = src
+    s.async = true
+    s.onload  = () => resolve()
+    s.onerror = () => reject(new Error(`Script yüklenemedi: ${src}`))
+    document.head.appendChild(s)
+  })
+}
+
+/** OpenCV yüklemesini başlat (idempotent, arka plan). */
 export function preloadOpenCV(): void {
   if (_loadStarted) return
   _loadStarted = true
   ;(async () => {
     try {
-      const mod: any = await import('@techstark/opencv-js')
-      const maybe = mod.default ?? mod
-      // Paket sürümüne göre: thenable modül YA DA onRuntimeInitialized callback
-      const cv = typeof maybe.then === 'function'
-        ? await maybe
-        : await new Promise<any>((resolve) => {
-            if (maybe.Mat) { resolve(maybe); return }
-            maybe.onRuntimeInitialized = () => resolve(maybe)
+      const base = import.meta.env.BASE_URL
+      await loadScript(`${base}opencv/opencv.js`)
+
+      // UMD, window.cv'yi bırakır. Sürüme göre üç olası durum:
+      // 1) thenable (emscripten Promise-benzeri) → await
+      // 2) onRuntimeInitialized callback bekleyen modül
+      // 3) çoktan hazır (cv.Mat mevcut)
+      const raw: any = (window as any).cv
+      if (!raw) throw new Error('window.cv oluşmadı')
+
+      const cv = await Promise.race([
+        (async () => {
+          if (typeof raw.then === 'function') return await raw
+          if (raw.Mat) return raw
+          return await new Promise<any>((resolve) => {
+            raw.onRuntimeInitialized = () => resolve(raw)
           })
+        })(),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error('OpenCV runtime zaman aşımı')), LOAD_TIMEOUT_MS)
+        ),
+      ])
+
+      if (!cv?.Mat) throw new Error('OpenCV runtime eksik (cv.Mat yok)')
       _cv = cv
-    } catch {
+    } catch (e) {
       _loadFailed = true
+      console.warn('[aruco] OpenCV yüklenemedi — js-aruco2 fallback aktif:', e)
     }
   })()
 }
@@ -112,13 +150,15 @@ function getDetectorIfReady(): any | null {
     // Düşük kontrastlı gravür için ayarlar:
     params.detectInvertedMarker = true   // ters polarite motor içinde
     params.adaptiveThreshConstant = 5    // varsayılan 7 → zayıf gölgede daha duyarlı
-    params.minMarkerPerimeterRate = 0.02 // küçük/uzak markerları eleme
+    // minMarkerPerimeterRate varsayılanda (0.03) bırakıldı: 0.02 dokulu arka
+    // planlarda (ahşap masa vb.) sahte kare oranını gözle görülür artırıyordu
     params.cornerRefinementMethod = cv.CORNER_REFINE_SUBPIX ?? 1
     const refine = new cv.aruco_RefineParameters(10, 3, true)
     _detector = new cv.aruco_ArucoDetector(dict, params, refine)
     return _detector
-  } catch {
+  } catch (e) {
     _loadFailed = true
+    console.warn('[aruco] OpenCV detektörü kurulamadı — js-aruco2 fallback aktif:', e)
     return null
   }
 }
@@ -154,7 +194,15 @@ function extractMarkers(corners: any, ids: any): DetectedMarker[] {
 
 /**
  * OpenCV ile tespit. Hazır değilse/başarısızsa null döner (→ js-aruco2
- * fallback). Varyantlar: {ham, CLAHE} × {düz, ayna}. Polarite motor içinde.
+ * fallback). Varyantlar: {ham, CLAHE} × {ayna, düz}. Polarite motor içinde.
+ *
+ * ADAY BİRLEŞTİRME — erken dönüş YOK: dokulu arka planlar (ahşap masa vb.)
+ * sahte kare üretebilir; ilk bulunanla dönmek gerçek markerı (başka
+ * varyant/yönde çıkacak olanı) bastırır ve yanlış ID kilidi engelleyip
+ * fallback'i de susturur. Bunun yerine 4 geçişin TÜM sonuçları toplanır,
+ * ID bazında tekilleştirilir; seçim üst katmanda (ScannerPage, kayıtlı-ID
+ * filtresi) yapılır. AYNA ÖNCE listelenir: fiziksel markerlar alt yüzeye
+ * gömülü olduğundan kamera onları her zaman aynalı görür — beklenen yön bu.
  */
 export function detectWithOpenCV(imageData: ImageData): DetectedMarker[] | null {
   const det = getDetectorIfReady()
@@ -177,25 +225,29 @@ export function detectWithOpenCV(imageData: ImageData): DetectedMarker[] | null 
       return claheMat
     }
 
+    const found: DetectedMarker[] = []
+    const seen = new Set<number>()
+    const push = (list: DetectedMarker[]) => {
+      for (const m of list) {
+        if (!seen.has(m.id)) { seen.add(m.id); found.push(m) }
+      }
+    }
+
     for (const variant of [() => gray, makeClahe]) {
       const mat = variant()
 
-      // a. Düz
-      let res = runDetect(cv, det, mat)
-      if (res.length > 0) return res
-
-      // b. Aynalı — köşeleri geri eşle
+      // a. Aynalı ÖNCE — köşeleri ham kare uzayına geri eşle (x' = w − x)
       if (!flipped) flipped = new cv.Mat()
       cv.flip(mat, flipped, 1)
-      res = runDetect(cv, det, flipped)
-      if (res.length > 0) {
-        return res.map(m => ({
-          id: m.id,
-          corners: m.corners.map(c => ({ x: imageData.width - c.x, y: c.y })),
-        }))
-      }
+      push(runDetect(cv, det, flipped).map(m => ({
+        id: m.id,
+        corners: m.corners.map(c => ({ x: imageData.width - c.x, y: c.y })),
+      })))
+
+      // b. Düz
+      push(runDetect(cv, det, mat))
     }
-    return []
+    return found
   } catch {
     return null // hata → fallback'e bırak
   } finally {

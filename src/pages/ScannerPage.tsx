@@ -313,10 +313,19 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
 
       // Async detection — RAF döngüsü bloklanmaz
       detectMarkers(imageData, roi).then((markers) => {
+        // ── Aday seçimi ──
+        // Motor artık TÜM adayları döndürür (ayna+düz, tüm varyantlar).
+        // Dokulu arka plan sahte kare üretebilir; kayıtlı bir ID varsa onu
+        // tercih et — sahte aday gerçek markerı gölgeleyemesin.
+        const allowedSet = allowedIdsRef.current
+        const chosen =
+          markers.find(m => allowedSet.size === 0 || allowedSet.has(m.id)) ??
+          markers[0] ?? null
+
         // ── ROI takibini güncelle ──
-        if (markers.length > 0) {
-          const xs = markers[0].corners.map(c => c.x)
-          const ys = markers[0].corners.map(c => c.y)
+        if (chosen) {
+          const xs = chosen.corners.map(c => c.x)
+          const ys = chosen.corners.map(c => c.y)
           const bx = Math.min(...xs), by = Math.min(...ys)
           const bw = Math.max(...xs) - bx, bh = Math.max(...ys) - by
           const mx = (bw * (ROI_EXPAND - 1)) / 2
@@ -332,7 +341,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         // ── Bulanıklık ipucu ──
         // Marker bir süredir yoksa arada bir keskinliğe bak (her ~15 tespit);
         // düşükse kullanıcıya odak mesafesi ipucu göster.
-        if (markers.length === 0 && lastIdRef.current === null) {
+        if (!chosen && lastIdRef.current === null) {
           const elapsed = performance.now() - scanStartRef.current
           if (elapsed > BLUR_HINT_AFTER_MS && ++blurCounterRef.current >= 15) {
             blurCounterRef.current = 0
@@ -346,11 +355,11 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         }
 
         // ── Kayıtlı ID filtresi ──
-        // rawId: motorun okuduğu ham ID. Yalnızca DB'de kayıtlı ID'ler geçerli
+        // rawId: seçilen adayın ID'si. Yalnızca DB'de kayıtlı ID'ler geçerli
         // (küme boşsa filtre yok → hepsi geçerli). Kayıtlı olmayan okumalar
-        // (yoğun sözlükte "1"→"136" gibi) tampona -1 olarak girer, hiç sayılmaz.
-        const allowed = allowedIdsRef.current
-        const rawId = markers.length > 0 ? markers[0].id : -1
+        // tampona -1 olarak girer, hiç sayılmaz.
+        const allowed = allowedSet
+        const rawId = chosen ? chosen.id : -1
         const accepted = rawId >= 0 && (allowed.size === 0 || allowed.has(rawId))
 
         // ── Oylama tamponunu güncelle ──
@@ -367,8 +376,8 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           const octx = overlay.getContext('2d')!
           octx.clearRect(0, 0, w, h)
 
-          if (markers.length > 0) {
-            const m = markers[0]
+          if (chosen) {
+            const m = chosen
             // Video CSS ile yatay aynalanıyor (doğal kontrol için). Köşeler ham
             // kare uzayında geldiğinden, aynalı video ile hizalamak için x'i çevir.
             // Metin overlay aynalanmadığından okunur kalır.

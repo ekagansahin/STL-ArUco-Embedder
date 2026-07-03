@@ -25,7 +25,22 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,wasm,json,png,svg}'],
+        // opencv.js (~13MB) precache DIŞI: ilk yüklemeyi şişirmesin.
+        // İlk tarama kullanımında runtime cache'e girer (aşağıda CacheFirst)
+        // ve sonrasında offline da çalışır.
+        globIgnores: ['**/opencv/opencv.js'],
         maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
+        runtimeCaching: [
+          {
+            urlPattern: /\/opencv\/opencv\.js$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'opencv-runtime',
+              expiration: { maxEntries: 2 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+        ],
       },
     }),
   ],
