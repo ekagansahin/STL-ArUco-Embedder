@@ -4,7 +4,12 @@
 
 **🔗 Live app: https://ekagansahin.github.io/STL-ArUco-Embedder/**
 
-<!-- TODO: add a demo image here once captured, e.g. ![Demo](sample/screenshots/demo.png) -->
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![React](https://img.shields.io/badge/React-19-61DAFB)
+![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6)
+![OpenCV.js](https://img.shields.io/badge/OpenCV.js-5-5C3EE8)
+
+![STL ArUco Embedder — placing a marker on the base of a part](docs/screenshot.png)
 
 ---
 
@@ -63,17 +68,21 @@ A live 3D viewer (drag to rotate, right-drag to pan, scroll to zoom) plus a 2D t
 
 ### 2. Scan
 
-Open the Scanner tab and point your webcam at a printed part. Frames are decoded in real time with [js-aruco2](https://github.com/nicolasalber/js-aruco2). The camera preview is mirrored for natural control (move your hand right, it moves right on screen) while detection runs on the true, un-mirrored frame.
+Open the Scanner tab and point your webcam at a printed part. The camera preview is mirrored for natural control (move your hand right, it moves right on screen) while detection runs on the true, un-mirrored frame.
 
-Reading a **carved, single-colour** marker is much harder than reading a printed black-on-white one — the only contrast comes from shadows in the recesses. The scanner therefore layers several safeguards:
+Reading a **carved, single-colour** marker is much harder than reading a printed black-on-white one — the only contrast comes from shadows in the recesses. The scanner therefore uses two detection engines and several safeguards:
 
-- **Preprocessing × orientation matrix.** Each frame is tried through `{ raw · global contrast stretch · CLAHE (local adaptive contrast) } × { normal · horizontally-flipped }`, first hit wins. This handles both the low, local contrast of engraved markers *and* the fact that a base-embedded marker is always seen mirrored. (js-aruco2 only tries the 4 rotations internally, never a mirror — so the flip is done here.)
+- **OpenCV.js `ArucoDetector` (primary engine).** Sweeps the adaptive-threshold window, refines corners to sub-pixel accuracy and handles inverted polarity (pockets that look *lighter* than a shiny surface). Each frame is tried as `{ raw · CLAHE } × { mirrored · normal }` and all candidates are merged. The ~13 MB OpenCV build is loaded lazily in the background; a status chip shows whether the advanced engine is active.
+- **[js-aruco2](https://github.com/nicolasalber/js-aruco2) (fallback engine).** Used until OpenCV is ready, or if it fails to load. It runs a `scale × preprocessing × polarity × orientation` matrix — `{ 640 · 1024 px } × { raw · contrast stretch · CLAHE · black-hat } × { normal · negative } × { normal · mirrored }` — and the first hit wins. (js-aruco2 only tries the 4 rotations internally, never a mirror — so the flip is done here.)
+- **Mirror handling.** A base-embedded marker is always seen mirrored by the camera, so both engines try the horizontally-flipped frame and map the corners back.
 - **Registered-ID whitelist.** On camera start the set of marker IDs actually saved in the database is loaded; only those IDs are accepted. An unregistered read (e.g. a stray "136" that isn't in your library) is dropped and never counted.
 - **Time-tiered temporal voting.** An ID is only locked once it *dominates recent frames*, not on a single lucky frame:
   - first **3 s** — strict: the same ID in **≥ 4 of the last 7** frames
   - after 3 s — relaxed: **≥ 2 of the last 4** frames
   - after **15 s** with no lock — the scanner stops and shows a "no marker found" message with a retry button
 - **Live overlay feedback.** The detection box is **green** when an ID is confirmed, **yellow** for a valid candidate still being voted on, and **red** for a marker that was read but is not in the database.
+- **ROI tracking and rate limiting.** Once a marker is found, the next frames scan only an expanded region around it first; detection runs at ~10 fps so the video stays smooth.
+- **Camera controls and hints.** The scanner requests 1080p with continuous autofocus, shows torch and zoom controls when the camera supports them, and displays a focus-distance hint if the image looks blurry.
 
 On a confirmed detection the app queries the local database and shows the part's details.
 
@@ -99,37 +108,45 @@ All parts are stored locally in IndexedDB via [Dexie.js](https://dexie.org/), so
 | Bundler | Vite 8 (Rolldown) |
 | 3D rendering | Three.js r185 + OrbitControls |
 | Boolean subtraction | manifold-3d (WASM) |
-| ArUco detection | js-aruco2 (loaded via script tag; CJS-incompatible with Vite bundling) |
+| ArUco detection | OpenCV.js 5 `ArucoDetector` (primary) + js-aruco2 (fallback), both loaded via script tag |
 | Local database | Dexie.js v4 (IndexedDB) |
 | ZIP export/import | JSZip |
 | PWA | vite-plugin-pwa + Workbox |
 
-The interface is bilingual (Turkish / English), toggled from the top bar.
+The interface is available in English (default) and Turkish, toggled from the top bar; the choice is remembered.
 
 ---
 
 ## Project structure
 
 ```
-public/aruco/
-  cv.js              # js-aruco2 computer-vision helpers
-  aruco.js           # js-aruco2 detector + dictionary base
-  aruco_4x4_50.js    # the 50-marker ARUCO_4X4_50 dictionary (scanner side)
+public/
+  aruco/
+    cv.js              # js-aruco2 computer-vision helpers
+    aruco.js           # js-aruco2 detector + dictionary base
+    aruco_4x4_50.js    # the 50-marker ARUCO_4X4_50 dictionary (fallback scanner)
+  opencv/
+    opencv.js          # OpenCV.js 5 build with ArUco (primary scanner, lazy-loaded)
+  icons/               # PWA icons
 src/
   assets/
-    aruco_dict_4x4_50.json   # 50 × 6×6 bit patterns (embedder side)
+    aruco_dict_4x4_50.json   # 50 × 6×6 bit patterns (embedder + OpenCV dictionary)
   lib/
-    aruco.ts         # builds the 3D marker geometry from the bit patterns
-    aruco-scanner.ts # detection pipeline (preprocessing × orientation matrix)
-    mesh.ts          # STL analysis, placement presets, embed pipeline
-    manifold.ts      # manifold-3d WASM loader
-    export.ts        # STL export
-    db.ts            # Dexie / IndexedDB schema and helpers
-  components/        # Viewer3D, Footprint2D, PlacementControls, PresetCards, ...
-  pages/             # EmbedderPage, ScannerPage, LibraryPage
+    aruco.ts           # builds the 3D marker pocket geometry from the bit patterns
+    aruco-opencv.ts    # OpenCV.js loader, custom dictionary, primary detector
+    aruco-scanner.ts   # detection pipeline: OpenCV first, js-aruco2 fallback matrix
+    mesh.ts            # STL analysis, placement presets, embed pipeline
+    manifold.ts        # manifold-3d WASM loader
+    export.ts          # STL export
+    db.ts              # Dexie / IndexedDB schema and helpers
+    project-io.ts      # library ZIP export / import
+  components/          # Viewer3D, Footprint2D, PlacementControls, PresetCards, UploadZone, MobileGate
+  pages/               # EmbedderPage, ScannerPage, LibraryPage
+docs/
+  screenshot.png
 ```
 
-The scanner-side dictionary (`aruco_4x4_50.js`) and the embedder-side patterns (`aruco_dict_4x4_50.json`) are generated from the same source set, so the printed pattern and the decoder always agree.
+All three consumers — the embedder, the OpenCV dictionary and the js-aruco2 dictionary (`aruco_4x4_50.js`) — use the same 50 codes, so the printed pattern and the decoders always agree.
 
 ---
 
@@ -165,7 +182,7 @@ Output goes to `dist/`. The project is configured with `base: '/STL-ArUco-Embedd
 
 - **Single-colour, carved markers are inherently low-contrast.** The scanner compensates a lot in software, but a filament colour-change at the engrave layer (e.g. `M600`), a deeper etch, or a larger marker will always read more reliably.
 - **50 IDs.** The dictionary intentionally trades capacity for robustness; if more than 50 distinct parts are ever needed, the dictionary can be regenerated at a larger size (at the cost of reprinting).
-- **Possible next steps:** swap js-aruco2 for the OpenCV.js ArUco detector (adaptive-threshold sweep, sub-pixel corner refinement, tunable error correction) for even stronger reads.
+- **First scan downloads OpenCV.** The ~13 MB OpenCV.js build is fetched on first use of the scanner and cached for offline use afterwards; until then the lighter js-aruco2 engine is used.
 
 ---
 
