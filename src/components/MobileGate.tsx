@@ -1,18 +1,18 @@
 /**
- * Telefon / tablet bilgilendirme kapısı.
+ * Phone / tablet notice gate.
  *
- * Uygulama yalnızca masaüstü (Windows / macOS) için tasarlandı; dokunmatik
- * sürükleme ve 3D etkileşim mobilde desteklenmiyor. Telefon veya tablet
- * algılandığında tam ekran bir bilgilendirme gösterilir. Gerçek masaüstü
- * cihazlar (dokunmatik Windows dizüstüleri dahil) engellenmez.
+ * The app is designed for desktop only (Windows / macOS); touch dragging and
+ * 3D interaction are not supported on mobile. When a phone or tablet is
+ * detected, a full-screen notice is shown. Real desktop devices
+ * (including touch-screen Windows laptops) are not blocked.
  *
- * Mesaj iki dilde birden gösterilir: kullanıcı dil değiştirme düğmesine
- * (overlay'in arkasında kaldığı için) ulaşamayabilir.
+ * The message is shown in both languages at once: the user may not be able
+ * to reach the language toggle (it sits behind the overlay).
  */
 
 import { useState } from 'react'
 
-/** Telefon veya tablet mi? Masaüstü ise (Win/Mac/Linux) false döner. */
+/** Is this a phone or tablet? Returns false on desktop (Win/Mac/Linux). */
 function detectMobileOrTablet(): boolean {
   if (typeof navigator === 'undefined') return false
   const nav = navigator as Navigator & {
@@ -21,17 +21,17 @@ function detectMobileOrTablet(): boolean {
   }
   const ua = navigator.userAgent || ''
 
-  // 1) Chromium User-Agent Client Hints — en güvenilir sinyal
+  // 1) Chromium User-Agent Client Hints — the most reliable signal
   if (nav.userAgentData && nav.userAgentData.mobile === true) return true
 
-  // 2) iPadOS 13+ "masaüstü modu"nda kendini MacIntel gösterir.
-  //    Çok dokunmalı + MacIntel kombinasyonu iPad'i ele verir.
+  // 2) iPadOS 13+ reports itself as MacIntel in "desktop mode".
+  //    Multi-touch + MacIntel gives the iPad away.
   const isIPadOS =
     (nav.platform === 'MacIntel' || navigator.platform === 'MacIntel') &&
     navigator.maxTouchPoints > 1
   if (isIPadOS) return true
 
-  // 3) Klasik UA imzası (Android telefon/tablet, iPhone, eski mobil tarayıcılar)
+  // 3) Classic UA signature (Android phones/tablets, iPhone, older mobile browsers)
   if (
     /Android|iPhone|iPad|iPod|Mobile|Tablet|Silk|Kindle|BlackBerry|Opera Mini|IEMobile|Windows Phone/i.test(
       ua,
@@ -48,7 +48,7 @@ interface MobileGateProps {
 }
 
 export default function MobileGate({ lang }: MobileGateProps) {
-  // UA çalışma sırasında değişmez → tek sefer hesapla
+  // The UA doesn't change at runtime → compute once
   const [dismissed, setDismissed] = useState(false)
   const [isMobile] = useState(detectMobileOrTablet)
 

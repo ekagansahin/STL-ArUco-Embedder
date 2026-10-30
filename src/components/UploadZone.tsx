@@ -1,5 +1,5 @@
 /**
- * STL sürükle-bırak yükleme alanı.
+ * Drag-and-drop STL upload area.
  */
 
 import { useCallback, useState } from 'react'

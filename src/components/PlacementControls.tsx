@@ -1,6 +1,6 @@
 /**
- * Yerleşim kontrol paneli — tüm slider'lar.
- * Oryantasyon (X/Y/Z dönüş) varsayılan gizli; "Gelişmiş Ayarlar" toggle ile açılır.
+ * Placement control panel — all sliders.
+ * Orientation (X/Y/Z rotation) is hidden by default; opened via the "Advanced Settings" toggle.
  */
 
 import { useState } from 'react'
@@ -23,7 +23,7 @@ interface SliderProps {
   max: number
   step: number
   unit?: string
-  /** Değer okumasını özelleştir (ör. kare marker: "10 × 10 mm²"). */
+  /** Customise the value readout (e.g. square marker: "10 × 10 mm²"). */
   format?: (v: number) => string
   onChange: (v: number) => void
 }
@@ -69,7 +69,7 @@ export default function PlacementControls({
         position: 'Konum',
         posX: 'X Ekseni', posY: 'Y Ekseni',
         geometry: 'ArUco Geometrisi',
-        size: 'Boyut', depth: 'Oyma Derinliği',
+        size: 'Boyut', sizeHint: 'kenar, min 7.2 mm', depth: 'Oyma Derinliği',
         advanced: 'Gelişmiş Ayarlar',
         warnCell: (c: string) =>
           `Hücre boyutu ${c} mm — 2 mm altı hem baskıda hem kamerada güvenilmez. Marker ≥ 12 mm önerilir.`,
@@ -82,7 +82,7 @@ export default function PlacementControls({
         position: 'Position',
         posX: 'X Axis', posY: 'Y Axis',
         geometry: 'ArUco Geometry',
-        size: 'Size', depth: 'Etch Depth',
+        size: 'Size', sizeHint: 'side, min 7.2 mm', depth: 'Etch Depth',
         advanced: 'Advanced Settings',
         warnCell: (c: string) =>
           `Cell size ${c} mm — below 2 mm is unreliable for both printing and camera detection. Marker ≥ 12 mm recommended.`,
@@ -93,14 +93,14 @@ export default function PlacementControls({
   const xRange = bounds ? { min: bounds.minX, max: bounds.maxX } : { min: -100, max: 100 }
   const yRange = bounds ? { min: bounds.minY, max: bounds.maxY } : { min: -100, max: 100 }
 
-  // ── Okunabilirlik uyarıları ────────────────────────────────────────────
-  // Hücre boyutu: 6×6 grid (4×4 bit + kenarlık). 2 mm altı hücre hem baskıda
-  // (köprüleme/iplik) hem kamerada (piksel yetersizliği) güvenilmez.
+  // ── Readability warnings ───────────────────────────────────────────────
+  // Cell size: 6×6 grid (4×4 bits + border). Cells under 2 mm are unreliable both
+  // when printing (bridging/stringing) and on camera (too few pixels).
   const cellSize = markerSize / 6
   const warnings: string[] = []
   if (cellSize < 2) warnings.push(t.warnCell(cellSize.toFixed(2)))
-  // Sessiz bölge: ArUco tespiti markerın siyah kenarlığı etrafında açık renk
-  // düz alan ister. Bounding box'a göre yaklaşık kontrol (silüetten değil).
+  // Quiet zone: ArUco detection needs a flat, light area around the marker's
+  // black border. Approximate check against the bounding box (not the silhouette).
   if (bounds) {
     const half = markerSize / 2
     const quiet = Math.min(
@@ -114,7 +114,7 @@ export default function PlacementControls({
 
   return (
     <div className="space-y-5">
-      {/* Gelişmiş Ayarlar — Oryantasyon toggle */}
+      {/* Advanced Settings — orientation toggle */}
       <div>
         <button
           onClick={() => setShowAdvanced(v => !v)}
@@ -142,7 +142,7 @@ export default function PlacementControls({
 
       <div className="border-t border-neutral-800" />
 
-      {/* Konum */}
+      {/* Position */}
       <div>
         <div className="text-xs text-neutral-500 uppercase tracking-wider mb-3">{t.position}</div>
         <div className="space-y-3">
@@ -155,11 +155,11 @@ export default function PlacementControls({
 
       <div className="border-t border-neutral-800" />
 
-      {/* Geometri */}
+      {/* Geometry */}
       <div>
         <div className="text-xs text-neutral-500 uppercase tracking-wider mb-3">{t.geometry}</div>
         <div className="space-y-3">
-          <Slider label={`${t.size} (kenar, min 7.2mm)`} value={markerSize} min={7.2} max={50} step={0.5}
+          <Slider label={`${t.size} (${t.sizeHint})`} value={markerSize} min={7.2} max={50} step={0.5}
             format={(v) => `${v.toFixed(1)} × ${v.toFixed(1)} mm²`}
             onChange={(v) => onChange('markerSize', v)} />
           <Slider label={t.depth} value={etchDepth} min={0.2} max={2.0} step={0.1} unit=" mm"
@@ -167,7 +167,7 @@ export default function PlacementControls({
         </div>
       </div>
 
-      {/* Okunabilirlik uyarıları */}
+      {/* Readability warnings */}
       {warnings.length > 0 && (
         <div className="space-y-2">
           {warnings.map((w, i) => (

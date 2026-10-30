@@ -10,11 +10,11 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icons/*.png'],
+      includeAssets: ['icons/*.png', 'favicon.svg'],
       manifest: {
         name: 'ArUco Embedder',
         short_name: 'ArUco',
-        description: '3D baskı parçalarına ArUco işareti göm',
+        description: 'Embed ArUco markers into STL files and identify printed parts with a webcam',
         theme_color: '#0f0f0f',
         background_color: '#0f0f0f',
         display: 'standalone',
@@ -25,9 +25,9 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,wasm,json,png,svg}'],
-        // opencv.js (~13MB) precache DIŞI: ilk yüklemeyi şişirmesin.
-        // İlk tarama kullanımında runtime cache'e girer (aşağıda CacheFirst)
-        // ve sonrasında offline da çalışır.
+        // opencv.js (~13 MB) is kept OUT of the precache so it doesn't bloat the
+        // first load. It enters the runtime cache on first scanner use
+        // (CacheFirst below) and works offline from then on.
         globIgnores: ['**/opencv/opencv.js'],
         maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
         runtimeCaching: [
@@ -45,10 +45,10 @@ export default defineConfig({
     }),
   ],
   optimizeDeps: {
-    // manifold-3d ESM modülü — Vite pre-bundle'dan hariç tut
+    // manifold-3d ESM module — exclude it from Vite's dependency pre-bundling
     exclude: ['manifold-3d'],
   },
   build: {
-    target: 'esnext', // WASM + top-level await için
+    target: 'esnext', // required for WASM + top-level await
   },
 })

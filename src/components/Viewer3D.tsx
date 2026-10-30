@@ -1,8 +1,8 @@
 /**
- * Three.js 3D önizleme bileşeni.
- * - STL mesh yarı saydam gri
- * - ArUco yerleşim kutusu kırmızı
- * - Orbit controls: sol tık döndür, sağ tık pan, scroll zoom
+ * Three.js 3D preview component.
+ * - STL mesh in semi-transparent grey
+ * - ArUco placement box in red
+ * - Orbit controls: left-drag rotates, right-drag pans, scroll zooms
  */
 
 import { useEffect, useRef } from 'react'
@@ -35,7 +35,7 @@ export default function Viewer3D({
   const markerBoxRef  = useRef<THREE.Mesh | null>(null)
   const frameRef      = useRef<number>(0)
 
-  // ── Sahneyi bir kez kur ────────────────────────────────────────────────
+  // ── Set up the scene once ──────────────────────────────────────────────
   useEffect(() => {
     const mount = mountRef.current!
 
@@ -43,14 +43,14 @@ export default function Viewer3D({
     scene.background = new THREE.Color('#141414')
     sceneRef.current = scene
 
-    // Aspect ratio 1 ile başla — ResizeObserver hemen düzeltecek
+    // Start with aspect ratio 1 — the ResizeObserver corrects it right away
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000)
     camera.position.set(0, -200, 150)
     cameraRef.current = camera
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.setSize(1, 1) // ResizeObserver anında düzeltir
+    renderer.setSize(1, 1) // the ResizeObserver fixes this immediately
     mount.appendChild(renderer.domElement)
     rendererRef.current = renderer
 
@@ -59,7 +59,7 @@ export default function Viewer3D({
     controls.dampingFactor = 0.08
     controlsRef.current = controls
 
-    // Işıklar
+    // Lights
     scene.add(new THREE.AmbientLight('#ffffff', 0.7))
     const dir = new THREE.DirectionalLight('#ffffff', 1.2)
     dir.position.set(100, 100, 200)
@@ -72,7 +72,7 @@ export default function Viewer3D({
     const grid = new THREE.GridHelper(400, 40, '#222222', '#1a1a1a')
     scene.add(grid)
 
-    // Render döngüsü
+    // Render loop
     const animate = () => {
       frameRef.current = requestAnimationFrame(animate)
       controls.update()
@@ -80,7 +80,7 @@ export default function Viewer3D({
     }
     animate()
 
-    // ResizeObserver: ilk boyut + sonraki resize'ları yakala
+    // ResizeObserver: catch the initial size and later resizes
     const ro = new ResizeObserver(entries => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect
@@ -101,7 +101,7 @@ export default function Viewer3D({
     }
   }, [])
 
-  // ── Geometri değişince mesh'i güncelle ────────────────────────────────
+  // ── Update the mesh when the geometry changes ──────────────────────────
   useEffect(() => {
     const scene = sceneRef.current
     if (!scene) return
@@ -114,7 +114,7 @@ export default function Viewer3D({
 
     if (!geometry) return
 
-    // Rotasyonu uygula
+    // Apply the rotation
     const rotated = geometry.clone()
     const euler = new THREE.Euler(
       THREE.MathUtils.degToRad(rotation[0]),
@@ -124,7 +124,7 @@ export default function Viewer3D({
     )
     rotated.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(euler))
 
-    // Tabanı grid'e otur
+    // Sit the base on the grid
     rotated.computeBoundingBox()
     const zMin = rotated.boundingBox!.min.z
     rotated.translate(0, 0, -zMin)
@@ -140,7 +140,7 @@ export default function Viewer3D({
     scene.add(mesh)
     meshRef.current = mesh
 
-    // Kamerayı parçaya odakla
+    // Frame the camera on the part
     rotated.computeBoundingBox()
     const bb    = rotated.boundingBox!
     const center = new THREE.Vector3()
@@ -157,7 +157,7 @@ export default function Viewer3D({
     controls.update()
   }, [geometry, rotation])
 
-  // ── Marker kutusu pozisyonunu güncelle ────────────────────────────────
+  // ── Update the marker box position ─────────────────────────────────────
   useEffect(() => {
     const scene = sceneRef.current
     if (!scene) return
@@ -170,7 +170,7 @@ export default function Viewer3D({
 
     if (!geometry) return
 
-    // z_min'i hesapla
+    // Compute z_min
     const rotated = geometry.clone()
     const euler = new THREE.Euler(
       THREE.MathUtils.degToRad(rotation[0]),
@@ -180,8 +180,8 @@ export default function Viewer3D({
     )
     rotated.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(euler))
     rotated.computeBoundingBox()
-    // Mesh effect'te translate(0,0,-zMin) ile taban Z=0'a oturtuluyor.
-    // Marker kutusu da Z=0 (taban) baz alınarak konumlandırılmalı.
+    // In the mesh effect, translate(0,0,-zMin) puts the base at Z=0.
+    // The marker box must likewise be positioned relative to Z=0 (the base).
     const boxGeo = new THREE.BoxGeometry(markerSize, markerSize, etchDepth)
     const boxMat = new THREE.MeshPhongMaterial({
       color: '#ef4444',

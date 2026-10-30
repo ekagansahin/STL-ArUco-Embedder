@@ -1,5 +1,5 @@
 /**
- * Mesh analizi, akıllı preset üretimi ve Three.js ↔ Manifold dönüşümleri.
+ * Mesh analysis, smart preset generation and Three.js ↔ Manifold conversions.
  */
 
 import * as THREE from 'three'
@@ -8,7 +8,7 @@ import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { getManifold } from './manifold'
 import { generateArucoManifold } from './aruco'
 
-// ─── Tipler ────────────────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────
 
 export interface Preset {
   id: string
@@ -17,9 +17,9 @@ export interface Preset {
   description: string
   descriptionEN: string
   badge: 'recommended' | 'alternative' | 'manual'
-  /** Euler açıları (derece) — mesh'e uygulanacak rotasyon */
+  /** Euler angles (degrees) — rotation to apply to the mesh */
   rotation: [number, number, number]
-  /** Rotasyon sonrası model koordinatlarında marker merkezi */
+  /** Marker centre in model coordinates after rotation */
   position: [number, number]
   markerSize: number   // mm
   etchDepth: number    // mm
@@ -35,7 +35,7 @@ export interface PlacementParams {
   etchDepth: number
 }
 
-// ─── STL Yükleme ───────────────────────────────────────────────────────────
+// ─── STL loading ───────────────────────────────────────────────────────────
 
 const loader = new STLLoader()
 
@@ -45,17 +45,17 @@ export function loadSTLFromBuffer(buffer: ArrayBuffer): THREE.BufferGeometry {
   return geo
 }
 
-// ─── Three.js ↔ Manifold Dönüşümleri ──────────────────────────────────────
+// ─── Three.js ↔ Manifold conversions ───────────────────────────────────────
 
 export function geometryToManifold(mod: any, geo: THREE.BufferGeometry): any {
-  // ── Adım 1: toNonIndexed ──────────────────────────────────────────────
+  // ── Step 1: toNonIndexed ──────────────────────────────────────────────
   const nonIdx = geo.clone().toNonIndexed()
 
-  // ── Adım 2: mergeVertices ─────────────────────────────────────────────
-  // CRITICAL: mergeVertices tüm attribute'ları hash'liyor.
-  // Normal attribute varsa, aynı pozisyondaki ama farklı face'e ait vertex'ler
-  // farklı normal'a sahip olduğundan merge edilmiyor → non-manifold mesh.
-  // Çözüm: merge öncesi normal'ı sil, sonra yeniden hesapla.
+  // ── Step 2: mergeVertices ─────────────────────────────────────────────
+  // CRITICAL: mergeVertices hashes every attribute.
+  // If a normal attribute exists, vertices at the same position that belong to
+  // different faces have different normals and are not merged → non-manifold mesh.
+  // Fix: delete the normals before merging, then recompute them.
   if (nonIdx.hasAttribute('normal')) nonIdx.deleteAttribute('normal')
 
   const merged = mergeVertices(nonIdx, 1e-4)
@@ -72,10 +72,10 @@ export function geometryToManifold(mod: any, geo: THREE.BufferGeometry): any {
   }
 
   const idxAttr = merged.index
-  if (!idxAttr) throw new Error('Mesh indexlenemedi — mergeVertices başarısız')
+  if (!idxAttr) throw new Error('Could not index the mesh — mergeVertices failed')
   const triVerts = new Uint32Array(idxAttr.array)
 
-  if (triVerts.length % 3 !== 0) throw new Error(`Index sayısı 3'ün katı olmalı: ${triVerts.length}`)
+  if (triVerts.length % 3 !== 0) throw new Error(`Index count must be a multiple of 3: ${triVerts.length}`)
 
   const mesh = new mod.Mesh({ numProp: 3, vertProperties: vertProps, triVerts, tolerance: 1e-6 })
   return new mod.Manifold(mesh)
@@ -101,14 +101,14 @@ export function manifoldToGeometry(manifoldObj: any): THREE.BufferGeometry {
   return geo
 }
 
-// ─── Akıllı Preset Analizi ─────────────────────────────────────────────────
+// ─── Smart preset analysis ─────────────────────────────────────────────────
 
 interface FaceGroup {
   normal: THREE.Vector3
   area: number
 }
 
-/** Geometrideki yüz normallerini alana göre gruplar */
+/** Groups the geometry's face normals, weighted by area */
 function analyzeFaceNormals(geo: THREE.BufferGeometry): FaceGroup[] {
   const posAttr = geo.attributes.position
   const normAttr = geo.attributes.normal
@@ -116,19 +116,19 @@ function analyzeFaceNormals(geo: THREE.BufferGeometry): FaceGroup[] {
   const groups = new Map<string, FaceGroup>()
 
   for (let i = 0; i < posAttr.count; i += 3) {
-    // Yüz normali: 3 vertex normalinin ortalaması
+    // Face normal: average of the 3 vertex normals
     const nx = (normAttr.getX(i) + normAttr.getX(i + 1) + normAttr.getX(i + 2)) / 3
     const ny = (normAttr.getY(i) + normAttr.getY(i + 1) + normAttr.getY(i + 2)) / 3
     const nz = (normAttr.getZ(i) + normAttr.getZ(i + 1) + normAttr.getZ(i + 2)) / 3
     const n = new THREE.Vector3(nx, ny, nz).normalize()
 
-    // Yüz alanı (Heron)
+    // Face area (Heron's formula)
     const a = new THREE.Vector3().fromBufferAttribute(posAttr, i)
     const b = new THREE.Vector3().fromBufferAttribute(posAttr, i + 1)
     const c = new THREE.Vector3().fromBufferAttribute(posAttr, i + 2)
     const area = new THREE.Triangle(a, b, c).getArea()
 
-    // Normal yönünü 0.15 hassasiyetle grupla
+    // Group normal directions with a 0.15 tolerance
     const key = `${n.x.toFixed(1)},${n.y.toFixed(1)},${n.z.toFixed(1)}`
 
     if (groups.has(key)) {
@@ -141,14 +141,14 @@ function analyzeFaceNormals(geo: THREE.BufferGeometry): FaceGroup[] {
   return [...groups.values()].sort((a, b) => b.area - a.area)
 }
 
-/** dominant_normal'ı -Z'ye hizalayan rotasyon matrisini döndürür */
+/** Returns the rotation matrix that aligns dominant_normal with -Z */
 function rotationToAlignFaceDown(dominantNormal: THREE.Vector3): THREE.Matrix4 {
   const target = new THREE.Vector3(0, 0, -1)
   const src = dominantNormal.clone().normalize()
 
-  // Zaten -Z'de mi?
+  // Already at -Z?
   if (src.dot(target) > 0.9999) return new THREE.Matrix4()
-  // Tam tersi (+Z)?
+  // Exactly opposite (+Z)?
   if (src.dot(target) < -0.9999) {
     return new THREE.Matrix4().makeRotationX(Math.PI)
   }
@@ -158,7 +158,7 @@ function rotationToAlignFaceDown(dominantNormal: THREE.Vector3): THREE.Matrix4 {
   return new THREE.Matrix4().makeRotationAxis(axis, angle)
 }
 
-/** Rotasyon uygulanmış geometrinin bounding box'ına göre preset parametrelerini hesaplar */
+/** Computes preset parameters from the bounding box of the rotated geometry */
 function computePresetParams(geo: THREE.BufferGeometry, rotMatrix: THREE.Matrix4, positionVariant: 'center' | 'corner') {
   const rotated = geo.clone()
   rotated.applyMatrix4(rotMatrix)
@@ -169,9 +169,9 @@ function computePresetParams(geo: THREE.BufferGeometry, rotMatrix: THREE.Matrix4
   const height = bb.max.y - bb.min.y
   const shortSide = Math.min(width, height)
 
-  // Boyut: kısa kenarın %25'i, 7.2–30mm arasında
-  const markerSize = 10   // sabit 10x10 mm (kullanıcı tercihi)
-  const etchDepth = 0.8   // oyma derinliği 0.8 mm
+  // Size: fixed default (the user can change it in the placement controls)
+  const markerSize = 10   // fixed 10 × 10 mm
+  const etchDepth = 0.8   // engraving depth 0.8 mm
 
   const cx = (bb.min.x + bb.max.x) / 2
   const cy = (bb.min.y + bb.max.y) / 2
@@ -180,13 +180,13 @@ function computePresetParams(geo: THREE.BufferGeometry, rotMatrix: THREE.Matrix4
   if (positionVariant === 'center') {
     position = [cx, cy]
   } else {
-    // Sol-alt köşe, padding ile
+    // Bottom-left corner, with padding
     const padX = width * 0.15
     const padY = height * 0.15
     position = [bb.min.x + padX + markerSize / 2, bb.min.y + padY + markerSize / 2]
   }
 
-  // Geçerlilik: marker tüm köşeleri bounding box içinde mi?
+  // Validity: are all marker corners inside the bounding box?
   const half = markerSize / 2
   const corners = [
     [position[0] - half, position[1] - half],
@@ -199,7 +199,7 @@ function computePresetParams(geo: THREE.BufferGeometry, rotMatrix: THREE.Matrix4
       x >= bb.min.x && x <= bb.max.x && y >= bb.min.y && y <= bb.max.y
   )
 
-  // Rotasyon matrisini Euler'a çevir (derece)
+  // Convert the rotation matrix to Euler angles (degrees)
   const euler = new THREE.Euler().setFromRotationMatrix(rotMatrix, 'XYZ')
   const rotation: [number, number, number] = [
     THREE.MathUtils.radToDeg(euler.x),
@@ -211,8 +211,8 @@ function computePresetParams(geo: THREE.BufferGeometry, rotMatrix: THREE.Matrix4
 }
 
 /**
- * Ana preset üretici.
- * STL geometrisini analiz eder, 2 akıllı preset + 1 manuel seçenek döndürür.
+ * Main preset generator.
+ * Analyses the STL geometry and returns 2 smart presets + 1 manual option.
  */
 export function computePresets(geo: THREE.BufferGeometry): Preset[] {
   const nonIndexed = geo.toNonIndexed()
@@ -221,14 +221,14 @@ export function computePresets(geo: THREE.BufferGeometry): Preset[] {
   const groups = analyzeFaceNormals(nonIndexed)
   const presets: Preset[] = []
 
-  // En büyük 2 yüzey grubundan preset üret
+  // Build presets from the 2 largest surface groups
   const topGroups = groups.slice(0, 3)
 
   for (let gi = 0; gi < topGroups.length && presets.length < 2; gi++) {
     const group = topGroups[gi]
     const rotMatrix = rotationToAlignFaceDown(group.normal)
 
-    // Merkez yerleşim
+    // Centre placement
     const center = computePresetParams(nonIndexed, rotMatrix, 'center')
     if (center.isValid && center.surfaceArea >= 7.2) {
       const isFirst = presets.length === 0
@@ -246,7 +246,7 @@ export function computePresets(geo: THREE.BufferGeometry): Preset[] {
         ...center,
       })
 
-      // Köşe varyantını da dene
+      // Also try the corner variant
       const corner = computePresetParams(nonIndexed, rotMatrix, 'corner')
       if (corner.isValid && presets.length < 2) {
         presets.push({
@@ -262,7 +262,7 @@ export function computePresets(geo: THREE.BufferGeometry): Preset[] {
     }
   }
 
-  // Manuel seçenek her zaman son
+  // The manual option always comes last
   presets.push({
     id: 'manual',
     label: 'Manuel Yerleşim',
@@ -280,11 +280,11 @@ export function computePresets(geo: THREE.BufferGeometry): Preset[] {
   return presets
 }
 
-// ─── Ana Gömme Pipeline'ı ──────────────────────────────────────────────────
+// ─── Main embedding pipeline ───────────────────────────────────────────────
 
 /**
- * STL geometrisi + placement parametrelerini alır,
- * ArUco işaretini gömer ve sonuç geometriyi döndürür.
+ * Takes the STL geometry + placement parameters,
+ * embeds the ArUco marker and returns the resulting geometry.
  */
 export async function embedAruco(
   geo: THREE.BufferGeometry,
@@ -292,7 +292,7 @@ export async function embedAruco(
 ): Promise<THREE.BufferGeometry> {
   const mod = await getManifold()
 
-  // 1. Rotasyonu uygula
+  // 1. Apply the rotation
   const rotated = geo.clone()
   const euler = new THREE.Euler(
     THREE.MathUtils.degToRad(params.rotation[0]),
@@ -305,28 +305,28 @@ export async function embedAruco(
 
   const zMin = rotated.boundingBox!.min.z
 
-  // 2. Parçayı manifold'a çevir
+  // 2. Convert the part to a manifold
   const partManifold = geometryToManifold(mod, rotated)
 
-  // 3. ArUco manifold'unu üret ve konumlandır
+  // 3. Generate and position the ArUco manifold
   const arucoManifold = await generateArucoManifold(
     params.markerId,
     params.markerSize,
     params.etchDepth
   )
-  // Taban yüzeyine yerleştir: kutu merkezi z_min'de. Kutu depth*2 yükseklikte ve
-  // merkezli olduğundan [z_min - depth, z_min + depth] aralığına yayılır; parça
-  // (z >= z_min) ile kesişimi tam olarak depth kadar oyuk açar. (+etchDepth eklenirse
-  // oyuk 2*depth olur → çift gömme hatası.)
+  // Place it on the base face: the box is centred at z_min. Being depth*2 tall and
+  // centred, it spans [z_min - depth, z_min + depth]; its intersection with the part
+  // (z >= z_min) cuts a pocket exactly depth deep. (Adding +etchDepth would make the
+  // pocket 2*depth deep → the double-embed bug.)
   const positioned = arucoManifold.translate([
     params.position[0],
     params.position[1],
-    zMin, // kutu merkezi tam taban yüzeyinde
+    zMin, // box centre exactly on the base face
   ])
 
-  // 4. Boolean çıkarma
+  // 4. Boolean subtraction
   const result = partManifold.subtract(positioned)
 
-  // 5. Three.js geometrisine dön
+  // 5. Convert back to Three.js geometry
   return manifoldToGeometry(result)
 }

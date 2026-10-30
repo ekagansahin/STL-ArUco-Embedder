@@ -1,6 +1,6 @@
 /**
- * Parça veritabanı — Dexie.js (IndexedDB).
- * Login gerektirmez; veri cihazda kalır.
+ * Parts database — Dexie.js (IndexedDB).
+ * No login required; data stays on the device.
  */
 
 import Dexie, { type Table } from 'dexie'
@@ -12,11 +12,11 @@ export interface Part {
   material: string
   notes: string
   createdAt: string
-  /** İndirilen STL dosyasının adı */
+  /** File name of the downloaded STL */
   filename: string
-  /** Orijinal (marker gömülmemiş) STL binary verisi */
+  /** Original STL binary data (without the marker) */
   originalStl?: ArrayBuffer
-  /** Baskıya hazır (marker gömülmüş) STL binary verisi */
+  /** Print-ready STL binary data (with the marker embedded) */
   printReadyStl?: ArrayBuffer
 }
 
@@ -25,12 +25,12 @@ class ArUcoDatabase extends Dexie {
 
   constructor() {
     super('ArUcoDB')
-    // v1 → mevcut kayıtlar (dosya yok)
+    // v1 → existing records (no files)
     this.version(1).stores({
       parts: '++id, markerId, name, createdAt',
     })
-    // v2 → originalStl ve printReadyStl alanları eklendi (ArrayBuffer, index yok)
-    // Şema string aynı kalır; Dexie yeni sürüm sadece migration için gerekli
+    // v2 → added originalStl and printReadyStl fields (ArrayBuffer, not indexed)
+    // The schema string stays the same; the new Dexie version is only needed for the migration
     this.version(2).stores({
       parts: '++id, markerId, name, createdAt',
     })
@@ -45,7 +45,7 @@ export async function getNextMarkerId(): Promise<number> {
   for (let i = 0; i < 50; i++) {
     if (!usedIds.has(i)) return i
   }
-  throw new Error('Tüm ID\'ler (0-49) kullanılmış')
+  throw new Error('All marker IDs (0–49) are already in use')
 }
 
 export async function savePart(part: Omit<Part, 'id'>): Promise<number> {

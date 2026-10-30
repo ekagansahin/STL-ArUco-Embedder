@@ -1,7 +1,7 @@
 /**
- * 2D üstten görünüm — "footprint haritası".
- * Mesh'in XY projeksiyonu (gri dolgu) + ArUco karesi (kırmızı).
- * Kullanıcı sürükleyerek marker'ı konumlandırabilir.
+ * 2D top view — the "footprint map".
+ * XY projection of the mesh (grey fill) + the ArUco square (red).
+ * The user can drag to position the marker.
  */
 
 import { useEffect, useRef, useCallback } from 'react'
@@ -33,7 +33,7 @@ export default function Footprint2D({
   const label = lang === 'TR' ? 'Üstten Görünüm · Tıkla veya Sürükle' : 'Top View · Click or Drag'
   const outOfBoundsText = lang === 'TR' ? '⚠ Sınır dışı' : '⚠ Out of bounds'
 
-  // Dünya koordinatı → canvas piksel
+  // World coordinates → canvas pixels
   const worldToCanvas = useCallback(
     (wx: number, wy: number, canvasW: number, canvasH: number) => {
       const { minX, maxX, minY, maxY } = boundsRef.current
@@ -47,13 +47,13 @@ export default function Footprint2D({
       const midY = (minY + maxY) / 2
       return {
         x: cx + (wx - midX) * scale,
-        y: cy - (wy - midY) * scale, // Y ekranı ters
+        y: cy - (wy - midY) * scale, // screen Y is inverted
       }
     },
     []
   )
 
-  // Canvas piksel → dünya koordinatı
+  // Canvas pixels → world coordinates
   const canvasToWorld = useCallback(
     (px: number, py: number, canvasW: number, canvasH: number) => {
       const { minX, maxX, minY, maxY } = boundsRef.current
@@ -73,7 +73,7 @@ export default function Footprint2D({
     []
   )
 
-  // Çizim
+  // Drawing
   const draw = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas || !geometry) return
@@ -83,11 +83,11 @@ export default function Footprint2D({
 
     ctx.clearRect(0, 0, W, H)
 
-    // Arka plan
+    // Background
     ctx.fillStyle = '#1a1a1a'
     ctx.fillRect(0, 0, W, H)
 
-    // Mesh kontur (bounding box yerine tüm XY noktaları)
+    // Mesh outline (all XY points instead of a bounding box)
     const rotated = geometry.clone()
     const euler = new THREE.Euler(
       THREE.MathUtils.degToRad(rotation[0]),
@@ -100,7 +100,7 @@ export default function Footprint2D({
     const bb = rotated.boundingBox!
     boundsRef.current = { minX: bb.min.x, maxX: bb.max.x, minY: bb.min.y, maxY: bb.max.y }
 
-    // Mesh dolgusu (bounding box olarak basitleştirilmiş)
+    // Mesh fill (simplified to its bounding box)
     const tl = worldToCanvas(bb.min.x, bb.max.y, W, H)
     const br = worldToCanvas(bb.max.x, bb.min.y, W, H)
     ctx.fillStyle = '#2d2d2d'
@@ -111,7 +111,7 @@ export default function Footprint2D({
     ctx.fill()
     ctx.stroke()
 
-    // ArUco marker kutusunu çiz
+    // Draw the ArUco marker box
     const half = markerSize / 2
     const { minX, maxX, minY, maxY } = boundsRef.current
     const outOfBounds =
@@ -132,13 +132,13 @@ export default function Footprint2D({
     ctx.fill()
     ctx.stroke()
 
-    // Marker merkez
+    // Marker centre
     ctx.fillStyle = outOfBounds ? '#ef4444' : '#f87171'
     ctx.beginPath()
     ctx.arc(mc.x, mc.y, 3, 0, Math.PI * 2)
     ctx.fill()
 
-    // Uyarı
+    // Warning
     if (outOfBounds) {
       ctx.fillStyle = '#ef4444'
       ctx.font = 'bold 12px sans-serif'
@@ -150,7 +150,7 @@ export default function Footprint2D({
     draw()
   }, [draw])
 
-  // Canvas boyutunu ayarla
+  // Set the canvas size
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -163,7 +163,7 @@ export default function Footprint2D({
     return () => ro.disconnect()
   }, [draw])
 
-  // Sürükleme
+  // Dragging
   const getPos = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current!
     const rect = canvas.getBoundingClientRect()

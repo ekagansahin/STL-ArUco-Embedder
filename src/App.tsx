@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import EmbedderPage from './pages/EmbedderPage'
 import ScannerPage from './pages/ScannerPage'
 import LibraryPage from './pages/LibraryPage'
@@ -6,6 +6,17 @@ import MobileGate from './components/MobileGate'
 
 type Tab = 'embed' | 'scan' | 'library'
 type Lang = 'TR' | 'EN'
+
+const LANG_KEY = 'aruco-embedder-lang'
+
+/** English by default; remembers the user's last choice. */
+function initialLang(): Lang {
+  try {
+    return localStorage.getItem(LANG_KEY) === 'TR' ? 'TR' : 'EN'
+  } catch {
+    return 'EN'
+  }
+}
 
 const TABS = {
   embed:   { TR: '🛠 Gömücü',    EN: '🛠 Embedder' },
@@ -15,13 +26,18 @@ const TABS = {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('embed')
-  const [lang, setLang] = useState<Lang>('TR')
+  const [lang, setLang] = useState<Lang>(initialLang)
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0)
+
+  useEffect(() => {
+    document.documentElement.lang = lang === 'TR' ? 'tr' : 'en'
+    try { localStorage.setItem(LANG_KEY, lang) } catch { /* storage unavailable */ }
+  }, [lang])
 
   return (
     <div className="flex flex-col h-full">
 
-      {/* Telefon / tablet bilgilendirme kapısı — yalnızca mobilde görünür */}
+      {/* Phone / tablet notice — only shown on mobile devices */}
       <MobileGate lang={lang} />
 
       {/* Navbar */}
@@ -57,9 +73,9 @@ export default function App() {
         </button>
       </header>
 
-      {/* Sekmeler unmount edilmez — display:none ile gizlenir.
-          Böylece Embedder state (yüklenen STL, preset seçimi, slider değerleri)
-          ve Three.js scene sekme geçişlerinde korunur. */}
+      {/* Tabs are never unmounted — inactive ones are hidden with display:none,
+          so the Embedder state (loaded STL, preset choice, slider values)
+          and the Three.js scene survive tab switches. */}
       <main className="flex-1 overflow-hidden">
         <div className={`h-full overflow-y-auto ${tab === 'embed' ? 'flex' : 'hidden'}`}><EmbedderPage lang={lang} onEmbedComplete={() => setLibraryRefreshKey(k => k + 1)} /></div>
         <div className={`h-full overflow-y-auto ${tab === 'scan'    ? 'block' : 'hidden'}`}><ScannerPage  lang={lang} /></div>

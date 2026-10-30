@@ -1,5 +1,5 @@
 /**
- * Ana sayfa: STL yükle → preset seç → ayarla → göm → indir
+ * Main page: upload STL → choose preset → adjust → embed → download
  */
 
 import { useState, useCallback, useRef } from 'react'
@@ -59,6 +59,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
         next: 'Devam →',
         confirm: 'Onayla ve Devam Et',
         outOfBounds: '⚠️ Marker mesh sınırı dışında — konumu düzelt',
+        viewerHint: 'Sol tık: döndür · Sağ tık: kaydır · Scroll: zoom',
       }
     : {
         title: 'ArUco Embedder',
@@ -77,11 +78,12 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
         next: 'Continue →',
         confirm: 'Confirm & Continue',
         outOfBounds: '⚠️ Marker out of mesh bounds — adjust position',
+        viewerHint: 'Left-drag: rotate · Right-drag: pan · Scroll: zoom',
       }
 
   const handleFile = useCallback(async (buffer: ArrayBuffer, name: string) => {
     setErrorMsg(null)
-    originalBufferRef.current = buffer   // orijinal STL'yi sakla
+    originalBufferRef.current = buffer   // keep the original STL
     const geo = loadSTLFromBuffer(buffer)
     const computedPresets = computePresets(geo)
     const nextId = await getNextMarkerId()
@@ -149,7 +151,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
     }
   }, [geometry, rotation, markerX, markerY, markerSize, etchDepth, partName, material, notes, onEmbedComplete])
 
-  // ── Sol panel sürükle-bırak ─────────────────────────────────────────────
+  // ── Left panel drag-to-resize ──────────────────────────────────────────
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
     const startX    = e.clientX
     const startWidth = leftWidthRef.current
@@ -185,7 +187,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
     setResultGeo(null)
   }, [])
 
-  // ── Upload adımı ────────────────────────────────────────────────────────
+  // ── Upload step ─────────────────────────────────────────────────────────
   if (step === 'upload') {
     return (
       <div className="max-w-lg mx-auto mt-16 px-4">
@@ -195,7 +197,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
     )
   }
 
-  // ── İşleniyor ───────────────────────────────────────────────────────────
+  // ── Processing ──────────────────────────────────────────────────────────
   if (step === 'processing') {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-4">
@@ -205,7 +207,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
     )
   }
 
-  // ── Bitti ───────────────────────────────────────────────────────────────
+  // ── Done ────────────────────────────────────────────────────────────────
   if (step === 'done') {
     return (
       <div className="max-w-lg mx-auto mt-6 px-4 text-center space-y-4">
@@ -236,17 +238,17 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
     )
   }
 
-  // ── Preset + Place (tek ekran, step 'preset' veya 'place') ─────────────
+  // ── Preset + Place (single screen, step 'preset' or 'place') ───────────
   return (
-    <div className="flex h-full p-4 overflow-hidden">
+    <div className="flex w-full h-full p-4 overflow-hidden">
 
-      {/* Sol panel — genişliği sürükle-bırak ile ayarlanır */}
+      {/* Left panel — its width is adjusted by dragging */}
       <div
         className="shrink-0 flex flex-col gap-4 overflow-y-auto"
         style={{ width: leftWidth }}
       >
 
-        {/* Preset kartları */}
+        {/* Preset cards */}
         <div className="bg-neutral-900 rounded-xl p-4 border border-neutral-800">
           <PresetCards
             presets={presets}
@@ -256,7 +258,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
           />
         </div>
 
-        {/* Kontroller */}
+        {/* Controls */}
         {selectedPreset && (
           <div className="bg-neutral-900 rounded-xl p-4 border border-neutral-800">
             <PlacementControls
@@ -275,7 +277,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
           </div>
         )}
 
-        {/* Parça bilgileri */}
+        {/* Part information */}
         {selectedPreset && (
           <div className="bg-neutral-900 rounded-xl p-4 border border-neutral-800 space-y-3">
             <div className="text-xs text-neutral-500 uppercase tracking-wider">{t.partInfo}</div>
@@ -305,7 +307,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
         )}
       </div>
 
-      {/* Sürüklenebilir ayırıcı */}
+      {/* Draggable divider */}
       <div
         onMouseDown={handleDividerMouseDown}
         className="shrink-0 w-3 mx-1 flex items-center justify-center cursor-col-resize group self-stretch"
@@ -313,10 +315,10 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
         <div className="w-px h-12 rounded-full bg-neutral-700 group-hover:bg-blue-500 transition-colors" />
       </div>
 
-      {/* Sağ alan: 3D + 2D */}
+      {/* Right area: 3D + 2D */}
       <div className="flex-1 flex flex-col gap-4 min-w-0">
 
-        {/* 3D önizleme */}
+        {/* 3D preview */}
         <div className="flex-1 relative rounded-xl overflow-hidden border border-neutral-800">
           <Viewer3D
             geometry={geometry}
@@ -325,7 +327,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
             rotation={rotation}
           />
           <div className="absolute bottom-3 left-3 text-xs text-neutral-600 pointer-events-none">
-            Sol tık: döndür · Sağ tık: kaydır · Scroll: zoom
+            {t.viewerHint}
           </div>
         </div>
 
@@ -341,7 +343,7 @@ export default function EmbedderPage({ lang, onEmbedComplete }: EmbedderPageProp
           />
         )}
 
-        {/* Hata + Generate butonu */}
+        {/* Error + Generate button */}
         {selectedPreset && (
           <div className="flex items-center gap-3">
             {errorMsg && (

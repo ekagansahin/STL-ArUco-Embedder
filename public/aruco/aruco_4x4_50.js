@@ -1,7 +1,7 @@
-// ARUCO_4X4_50 — kendi tutarlı 4x4_1000 sözlüğümüzden seçilen, birbirine EN UZAK
-// 50 marker (rotasyon-duyarlı max-min Hamming seçimi), ID'ler 0-49 olarak yeniden
-// numaralandırıldı. Yoğun 4x4_1000'in aksine kodlar arası mesafe yüksek → tek bit
-// hatasıyla başka geçerli ID'ye kayma pratikte imkansız. tau: null → kütüphane hesaplar.
+// ARUCO_4X4_50 — the 50 MOST mutually distant markers selected from our own consistent
+// 4x4_1000 dictionary (rotation-aware max-min Hamming selection), renumbered as IDs 0–49.
+// Unlike the dense 4x4_1000, the inter-code distance is high → a single-bit error
+// practically cannot turn into another valid ID. tau: null → computed by the library.
 AR.DICTIONARIES['ARUCO_4X4_50'] = {
   nBits: 16,
   tau: null,

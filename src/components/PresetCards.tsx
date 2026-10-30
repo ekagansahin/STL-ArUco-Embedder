@@ -1,6 +1,6 @@
 /**
- * Akıllı preset kartları.
- * STL yüklenince otomatik analiz sonuçlarını 2-3 kart olarak sunar.
+ * Smart preset cards.
+ * After an STL is loaded, the automatic analysis results are shown as 2–3 cards.
  */
 
 import type { Preset } from '../lib/mesh'
@@ -49,25 +49,25 @@ export default function PresetCards({ presets, selected, onSelect, lang }: Prese
                 ${!preset.isValid ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
               `}
             >
-              {/* Rozet */}
+              {/* Badge */}
               <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${BADGE_STYLES[preset.badge]}`}>
                 {BADGE_LABELS[preset.badge][lang]}
               </span>
 
-              {/* Başlık */}
+              {/* Title */}
               <div className="mt-2 font-semibold text-sm text-neutral-100">{label}</div>
 
-              {/* Açıklama */}
+              {/* Description */}
               <div className="mt-1 text-xs text-neutral-500 leading-relaxed">{desc}</div>
 
-              {/* Parametreler */}
+              {/* Parameters */}
               {preset.badge !== 'manual' && (
                 <div className="mt-2 flex gap-2 flex-wrap">
                   <span className="text-[10px] bg-neutral-800 text-neutral-400 px-1.5 py-0.5 rounded">
                     {preset.markerSize} × {preset.markerSize} mm²
                   </span>
                   <span className="text-[10px] bg-neutral-800 text-neutral-400 px-1.5 py-0.5 rounded">
-                    {preset.etchDepth}mm derinlik
+                    {preset.etchDepth} mm {lang === 'TR' ? 'derinlik' : 'depth'}
                   </span>
                 </div>
               )}
@@ -78,7 +78,7 @@ export default function PresetCards({ presets, selected, onSelect, lang }: Prese
                 </div>
               )}
 
-              {/* Seçim göstergesi */}
+              {/* Selection indicator */}
               {isSelected && (
                 <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-blue-500" />
               )}

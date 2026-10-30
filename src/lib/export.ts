@@ -1,5 +1,5 @@
 /**
- * Geometriyi STL olarak dışa aktarır.
+ * Exports geometry as STL.
  */
 
 import * as THREE from 'three'
@@ -7,25 +7,25 @@ import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
 
 const exporter = new STLExporter()
 
-/** Geometriyi binary STL ArrayBuffer'a çevirir — kaydetmek veya indirmek için. */
+/** Converts geometry to a binary STL ArrayBuffer — for saving or downloading. */
 export function geometryToSTLBuffer(geo: THREE.BufferGeometry): ArrayBuffer {
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial())
   const dataView = exporter.parse(mesh, { binary: true }) as unknown as DataView
-  // Byte'ları garanti ArrayBuffer'a kopyala (SharedArrayBuffer type uyumsuzluğunu önler)
+  // Copy the bytes into a guaranteed ArrayBuffer (avoids the SharedArrayBuffer type mismatch)
   const src = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength)
   const dst = new ArrayBuffer(src.byteLength)
   new Uint8Array(dst).set(src)
   return dst
 }
 
-/** Geometriyi binary STL olarak indirir. */
+/** Downloads geometry as a binary STL file. */
 export function exportSTL(geo: THREE.BufferGeometry, filename: string) {
   const buffer = geometryToSTLBuffer(geo)
   const blob = new Blob([buffer], { type: 'application/octet-stream' })
   triggerDownload(blob, filename.endsWith('.stl') ? filename : filename + '.stl')
 }
 
-/** ArrayBuffer'ı dosya olarak indirir. */
+/** Downloads an ArrayBuffer as a file. */
 export function downloadBuffer(buffer: ArrayBuffer, filename: string) {
   const blob = new Blob([buffer], { type: 'application/octet-stream' })
   triggerDownload(blob, filename)

@@ -1,35 +1,35 @@
 /**
- * Proje dışa/içe aktarma.
+ * Project export / import.
  *
- * ZIP yapısı:
+ * ZIP layout:
  *   ID_0_PartName/
- *     original.stl       (varsa)
- *     print_ready.stl    (varsa)
+ *     original.stl       (if present)
+ *     print_ready.stl    (if present)
  *   ID_3_Other/
  *     ...
- *   database.json        ← tüm metadata, folder alanı ile birlikte
+ *   database.json        ← all metadata, including the folder field
  */
 
 import JSZip from 'jszip'
 import { getAllParts, savePart, db, type Part } from './db'
 
-// ─── Yardımcı ────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Klasör adı: ID_0_PartName (URL-safe karakterler) */
+/** Folder name: ID_0_PartName (URL-safe characters) */
 function folderName(part: Part): string {
-  const safeName = part.name.replace(/[^a-zA-Z0-9_\-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
+  const safeName = part.name.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
   return `ID_${part.markerId}_${safeName || 'Part'}`
 }
 
-// ─── Dışa Aktar ──────────────────────────────────────────────────────────────
+// ─── Export ──────────────────────────────────────────────────────────────────
 
 export async function exportProject(projectName = 'aruco_project'): Promise<void> {
   const parts = await getAllParts()
-  if (parts.length === 0) throw new Error('Kütüphane boş — dışa aktarılacak parça yok.')
+  if (parts.length === 0) throw new Error('The library is empty — there are no parts to export.')
 
   const zip = new JSZip()
 
-  // Metadata listesi (ArrayBuffer'lar hariç)
+  // Metadata list (without the ArrayBuffers)
   const dbEntries: object[] = []
 
   for (const part of parts) {
@@ -64,19 +64,19 @@ export async function exportProject(projectName = 'aruco_project'): Promise<void
   URL.revokeObjectURL(url)
 }
 
-// ─── İçe Aktar ───────────────────────────────────────────────────────────────
+// ─── Import ──────────────────────────────────────────────────────────────────
 
 export interface ImportResult {
   imported: number
-  skipped:  number   // zaten var olan markerId'ler
+  skipped:  number   // markerIds that already exist
 }
 
 export async function importProject(file: File): Promise<ImportResult> {
   const zip = await JSZip.loadAsync(await file.arrayBuffer())
 
-  // database.json oku
+  // Read database.json
   const dbFile = zip.file('database.json')
-  if (!dbFile) throw new Error('Geçersiz ZIP: database.json bulunamadı.')
+  if (!dbFile) throw new Error('Invalid ZIP: database.json not found.')
 
   const entries = JSON.parse(await dbFile.async('text')) as Array<{
     markerId:  number
@@ -88,7 +88,7 @@ export async function importProject(file: File): Promise<ImportResult> {
     folder:    string
   }>
 
-  // Mevcut markerId'leri al (çakışma kontrolü)
+  // Get the existing markerIds (conflict check)
   const existing = await db.parts.toArray()
   const existingIds = new Set(existing.map((p) => p.markerId))
 
@@ -101,7 +101,7 @@ export async function importProject(file: File): Promise<ImportResult> {
       continue
     }
 
-    // STL dosyalarını oku (yoksa undefined)
+    // Read the STL files (undefined if missing)
     const originalFile    = zip.file(`${entry.folder}/original.stl`)
     const printReadyFile  = zip.file(`${entry.folder}/print_ready.stl`)
 

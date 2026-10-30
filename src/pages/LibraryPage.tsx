@@ -1,6 +1,6 @@
 /**
- * Parça kütüphanesi — IndexedDB'deki tüm parçaları listeler.
- * Proje dışa/içe aktarma ve tüm hafızayı silme butonları içerir.
+ * Parts library — lists every part stored in IndexedDB.
+ * Includes project export/import and a button to clear all stored data.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -69,7 +69,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
         cleared:        'All parts deleted.',
       }
 
-  // ─── Yardımcı ──────────────────────────────────────────────────────────────
+  // ─── Helpers ───────────────────────────────────────────────────────────────
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok })
@@ -84,7 +84,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
 
   useEffect(() => { load() }, [refreshKey])
 
-  // ─── Parça işlemleri ───────────────────────────────────────────────────────
+  // ─── Part actions ──────────────────────────────────────────────────────────
 
   const handleDelete = async (part: Part) => {
     if (!window.confirm(t.confirmDelete)) return
@@ -92,7 +92,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
     load()
   }
 
-  // ─── Proje işlemleri ───────────────────────────────────────────────────────
+  // ─── Project actions ───────────────────────────────────────────────────────
 
   const handleExport = async () => {
     if (parts.length === 0) { showToast(t.exportEmpty, false); return }
@@ -100,7 +100,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
     try {
       await exportProject(projectName.trim() || 'aruco_project')
     } catch (e: any) {
-      showToast(e?.message ?? 'Hata', false)
+      showToast(e?.message ?? 'Error', false)
     } finally {
       setBusy(false)
     }
@@ -109,9 +109,9 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    // ZIP dosya adını proje adı olarak göster (.zip uzantısını kaldır)
+    // Show the ZIP file name as the project name (strip the .zip extension)
     const nameFromFile = file.name.replace(/\.zip$/i, '')
-    e.target.value = ''   // aynı dosyayı tekrar seçebilmek için sıfırla
+    e.target.value = ''   // reset so the same file can be picked again
     setBusy(true)
     try {
       const { imported, skipped } = await importProject(file)
@@ -137,7 +137,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
 
-      {/* Başlık + proje adı + butonlar */}
+      {/* Header + project name + buttons */}
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-lg font-semibold text-neutral-100 shrink-0">{t.title}</h2>
         <input
@@ -155,7 +155,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
           {t.export}
         </button>
 
-        {/* Gizli file input */}
+        {/* Hidden file input */}
         <input
           ref={importInputRef}
           type="file"
@@ -180,7 +180,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
         </button>
       </div>
 
-      {/* Toast bildirimi */}
+      {/* Toast notification */}
       {toast && (
         <div className={`text-sm px-4 py-2.5 rounded-xl border ${
           toast.ok
@@ -191,7 +191,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
         </div>
       )}
 
-      {/* Busy göstergesi */}
+      {/* Busy indicator */}
       {busy && (
         <div className="flex items-center gap-3 text-sm text-neutral-500">
           <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -199,7 +199,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
         </div>
       )}
 
-      {/* Parça listesi */}
+      {/* Parts list */}
       {loading && (
         <div className="flex justify-center py-12">
           <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -220,12 +220,12 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
               key={part.id}
               className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex items-start gap-4"
             >
-              {/* ID rozeti */}
+              {/* ID badge */}
               <div className="shrink-0 w-12 h-12 rounded-xl bg-blue-950 border border-blue-800 flex items-center justify-center">
                 <span className="text-blue-400 font-mono font-bold text-sm">{part.markerId}</span>
               </div>
 
-              {/* Bilgiler */}
+              {/* Details */}
               <div className="flex-1 min-w-0">
                 <div className="font-semibold text-neutral-100 text-sm truncate">{part.name}</div>
                 <div className="flex gap-3 mt-1 flex-wrap">
@@ -238,7 +238,7 @@ export default function LibraryPage({ lang, refreshKey = 0 }: LibraryPageProps) 
                 <p className="text-xs text-neutral-700 mt-1 truncate font-mono">{part.filename}</p>
               </div>
 
-              {/* İndirme + Sil */}
+              {/* Download + Delete */}
               <div className="shrink-0 flex flex-col gap-1 items-end">
                 {part.originalStl && (
                   <button

@@ -1,58 +1,58 @@
 /**
- * ArUco marker mesh üreticisi.
- * Önceden üretilmiş aruco_dict_4x4_50.json'dan bit pattern okur,
- * siyah hücreleri BİRLEŞİK 2D bölge + kademeli içe-offset pahlı
- * oyuk hacmine dönüştürür.
- * NOT: 4x4_50 sözlüğü — kodlar arası mesafe yüksek, yanlış okumaya dayanıklı.
+ * ArUco marker mesh generator.
+ * Reads bit patterns from the pre-generated aruco_dict_4x4_50.json and turns
+ * the black cells into a pocket volume: one MERGED 2D region with a stepped
+ * inward-offset chamfer.
+ * NOTE: 4x4_50 dictionary — high inter-code distance, robust against misreads.
  */
 
 import { getManifold } from './manifold'
 import arucoDict from '../assets/aruco_dict_4x4_50.json'
 
-/** marker ID için 6×6 bit grid döndürür (1=siyah, 0=beyaz) */
+/** Returns the 6×6 bit grid for a marker ID (1=black, 0=white) */
 export function getMarkerBits(id: number): number[][] {
-  if (id < 0 || id >= arucoDict.length) throw new Error(`ArUco ID ${id} geçersiz (0-49)`)
+  if (id < 0 || id >= arucoDict.length) throw new Error(`Invalid ArUco ID ${id} (valid range: 0–49)`)
   return arucoDict[id] as number[][]
 }
 
-/** Pah kademesi sayısı — 0.8mm derinlikte kademe ≈ 0.2mm ≈ tipik katman yüksekliği */
+/** Number of chamfer steps — at 0.8 mm depth each step ≈ 0.2 mm ≈ a typical layer height */
 const CHAMFER_STEPS = 4
 
 /**
- * Manifold boolean çıkarma için ArUco geometrisi üretir.
- * Sonuç: z=0'da yüzey açıklığı olan oyuk hacmi.
+ * Builds the ArUco geometry for the Manifold boolean subtraction.
+ * Result: a pocket volume that opens at the surface at z=0.
  *
- * Yapı:
- *  - Siyah hücre kareleri (1.001 büyütme ile örtüşen) TEK 2D bölgede
- *    birleştirilir (CrossSection, Positive fill).
- *  - z ∈ [-depth, 0]: birleşik bölge tam genişlik (yüzey altı temiz kesim payı).
- *  - z ∈ [0, depth]: CHAMFER_STEPS kademede bölge dış hattı içe offset'lenir
- *    → oyuk duvarları merdiven şeklinde daralır (baskıda katman yüksekliği
- *    zaten kademeler; sonuç pürüzsüz pah ile aynı).
+ * Structure:
+ *  - The black cell squares (scaled by 1.001 so they overlap) are merged into
+ *    ONE 2D region (CrossSection, Positive fill).
+ *  - z ∈ [-depth, 0]: merged region at full width (clean cut margin below the surface).
+ *  - z ∈ [0, depth]: the region's outer outline is offset inward in CHAMFER_STEPS
+ *    steps → the pocket walls narrow like a staircase (printing quantises
+ *    to layer height anyway, so the result equals a smooth chamfer).
  *
- * NEDEN birleşik bölge + offset, hücre-bazlı frustum DEĞİL:
- *  Hücre bazında pahlama, kaynaşmış komşu siyah hücrelerin ARASINDA tabanı
- *  sıfır genişlikte başlayıp yukarı doğru kalınlaşan kama sırtları üretir
- *  (ör. 0.8mm derinlikte tepede ~0.75mm, tabanda 0mm). Slicer bu bıçak
- *  sırtlarını tutunamayan kıvrık ipliklere çevirir → oyuklar çöple dolar,
- *  hücre sınırları kaybolur (saha gözlemi, 2026-07-03 baskısı). Birleşik
- *  bölgenin yalnız DIŞ hattını offset'lemek iç kısmı tamamen açık bırakır;
- *  hücreler arasında hiçbir ara geometri oluşmaz.
+ * WHY a merged region + offset, and NOT per-cell frustums:
+ *  Chamfering each cell produces wedge ridges BETWEEN fused neighbouring black
+ *  cells that start at zero width at the bottom and thicken upwards
+ *  (e.g. ~0.75 mm at the top, 0 mm at the bottom at 0.8 mm depth). The slicer
+ *  turns these knife edges into loose, curling strands → pockets fill with debris
+ *  and the cell boundaries are lost (observed on a test print, 2026-07-03).
+ *  Offsetting only the OUTER outline of the merged region leaves the interior
+ *  fully open; no geometry is created between cells.
  *
- * NEDEN pah (offset) hâlâ var:
- *  1. Alt yüzey gömmede oyuk tavanı köprülenir; içe daralan duvar kalan
- *     köprü açıklığını ~%40'a indirir → sarkma/iplik azalır.
- *  2. Eğimli/kademeli duvar geniş açıdan ışığı da gölgeler → tek renk
- *     gravürde kontrast alanı büyür.
+ * WHY a chamfer (offset) is still used:
+ *  1. When embedding on the bottom face, the pocket ceiling is bridged; the
+ *     inward-narrowing wall cuts the remaining bridge span to ~40% → less sagging/stringing.
+ *  2. Sloped/stepped walls also cast shadows under wide-angle light → larger
+ *     contrast area on single-colour engravings.
  *
- * Kullanım:
+ * Usage:
  *   const aruco = await generateArucoManifold(markerId, sizeInMm, depthInMm)
- *   aruco.translate([cx, cy, z_min])  → parçadan çıkarılacak nesne
+ *   aruco.translate([cx, cy, z_min])  → object to subtract from the part
  */
 export async function generateArucoManifold(
   markerId: number,
-  size: number,   // mm cinsinden toplam boyut (örn. 15)
-  depth: number,  // mm cinsinden oyma derinliği (örn. 0.6)
+  size: number,   // total size in mm (e.g. 15)
+  depth: number,  // engraving depth in mm (e.g. 0.6)
 ) {
   const { Manifold, CrossSection } = await getManifold()
   const bits = getMarkerBits(markerId)
@@ -60,8 +60,8 @@ export async function generateArucoManifold(
   const cellSize = size / 6
   const offset = size / 2
 
-  // 1.001 faktörü: komşu siyah hücreler kesin örtüşsün → union'da tek bölge.
-  // (0.999 küçültme komşular arasında mikron duvar bırakıyordu.)
+  // 1.001 factor: neighbouring black cells must overlap → a single region after union.
+  // (Shrinking by 0.999 left micron-thin walls between neighbours.)
   const half = (cellSize * 1.001) / 2
 
   const polygons: Array<Array<[number, number]>> = []
@@ -69,30 +69,30 @@ export async function generateArucoManifold(
     for (let col = 0; col < 6; col++) {
       if (bits[row][col] !== 1) continue
       const cx = col * cellSize + cellSize / 2 - offset
-      const cy = -(row * cellSize + cellSize / 2 - offset) // Y eksenini çevir
+      const cy = -(row * cellSize + cellSize / 2 - offset) // flip the Y axis
       polygons.push([
         [cx - half, cy - half], [cx + half, cy - half],
         [cx + half, cy + half], [cx - half, cy + half],
       ])
     }
   }
-  if (polygons.length === 0) throw new Error('ArUco marker hiç siyah hücre içermiyor')
+  if (polygons.length === 0) throw new Error('ArUco marker contains no black cells')
 
-  // Örtüşen kareler Positive fill ile tek bölgede birleşir
+  // Overlapping squares merge into a single region with Positive fill
   const region = new CrossSection(polygons, 'Positive')
 
-  // Duvar pahı: dış hattan içe toplam daralma. Tek hücrede tavan köprüsü
-  // hücrenin %40'ından dar olmasın diye %30 ile sınırlı.
+  // Wall chamfer: total inward narrowing from the outer outline. Capped at 30% so
+  // the ceiling bridge of a single cell doesn't get narrower than 40% of the cell.
   const inset = Math.min(depth, cellSize * 0.3)
 
-  // Alt yarı: z ∈ [-depth, 0] tam genişlik — yüzey altı temiz kesim payı
+  // Lower half: z ∈ [-depth, 0] at full width — clean cut margin below the surface
   let result: any = Manifold.extrude(region.toPolygons(), depth).translate([0, 0, -depth])
 
-  // Üst yarı: kademeli içe offset (yüzeyde tam, z=depth'te -inset)
+  // Upper half: stepped inward offset (full width at the surface, -inset at z=depth)
   const stepH = depth / CHAMFER_STEPS
   for (let k = 0; k < CHAMFER_STEPS; k++) {
     const shrunk = k === 0 ? region : region.offset(-(inset * k) / CHAMFER_STEPS, 'Miter')
-    if (shrunk.area() < 1e-6) break // bölge tamamen kapandı — kalan kademeler boş
+    if (shrunk.area() < 1e-6) break // region fully closed — remaining steps are empty
     const slab = Manifold.extrude(shrunk.toPolygons(), stepH).translate([0, 0, k * stepH])
     result = result.add(slab)
   }

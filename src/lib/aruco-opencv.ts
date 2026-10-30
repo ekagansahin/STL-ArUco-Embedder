@@ -1,30 +1,30 @@
 /**
- * OpenCV.js tabanlı ArUco detektörü — birincil tespit motoru.
+ * OpenCV.js-based ArUco detector — the primary detection engine.
  *
- * NEDEN: js-aruco2 tek global eşikle çalışır; tek renk gravür markerlarda
- * (kontrast yalnız oyuk gölgesinden, Δ~15-30 gri seviyesi) başarısız olur.
- * OpenCV ArucoDetector adaptif eşik penceresi TARAMASI yapar
- * (adaptiveThreshWinSizeMin→Max), subpixel köşe rafinasyonu uygular ve
- * detectInvertedMarker ile ters polariteyi (parlak yüzeyde açık görünen
- * oyuklar) motor içinde dener. Sentetik testte Δ=20 kontrastta tespit
- * doğrulandı.
+ * WHY: js-aruco2 uses a single global threshold and fails on single-colour
+ * engraved markers (contrast comes only from pocket shadows, Δ ≈ 15–30 grey levels).
+ * OpenCV's ArucoDetector SWEEPS the adaptive-threshold window
+ * (adaptiveThreshWinSizeMin→Max), refines corners to sub-pixel accuracy and
+ * tries inverted polarity inside the engine via detectInvertedMarker (pockets
+ * that look light on a bright surface). Detection was verified on a synthetic
+ * test at Δ=20 contrast.
  *
- * Maliyet: ~13 MB script (wasm gömülü). Bu yüzden:
- *  - Tembel yüklenir (ilk çağrıda, arka planda)
- *  - Yüklenene kadar / yükleme başarısız olursa js-aruco2 devrede kalır
- *    (aruco-scanner.ts fallback matrisi)
+ * Cost: ~13 MB script (wasm embedded). Therefore:
+ *  - It is loaded lazily (on first call, in the background)
+ *  - Until it has loaded, or if loading fails, js-aruco2 stays active
+ *    (fallback matrix in aruco-scanner.ts)
  *
- * YÜKLEME YOLU: public/opencv/opencv.js'ten dinamik <script> tag ile —
- * js-aruco2 ile AYNI desen. npm modülü (@techstark/opencv-js) Vite/rolldown
- * CJS interop'undan bundle edilince tarayıcıda yüklenemiyordu (sahada
- * sürekli "OpenCV yüklenemedi"); js-aruco2 da aynı sebeple public/'te.
- * Dosya: node_modules/@techstark/opencv-js/dist/opencv.js kopyası
- * (v5.0.0-release.1). Güncellerken yeniden kopyala.
+ * LOADING: via a dynamic <script> tag from public/opencv/opencv.js — the
+ * SAME pattern as js-aruco2. The npm module (@techstark/opencv-js) failed to
+ * load in the browser once bundled through Vite/rolldown's CJS interop (it
+ * kept reporting "OpenCV failed to load"); js-aruco2 lives in public/ for the same reason.
+ * File: a copy of node_modules/@techstark/opencv-js/dist/opencv.js
+ * (v5.0.0-release.1). Copy it again when updating.
  *
- * Ayna: baskıda marker alt yüzeye gömülü olduğundan kamera AYNALI görür.
- * detectInvertedMarker polariteyi çözer ama aynayı ÇÖZMEZ (aynalı desen
- * sözlükte başka/geçersiz koda düşer) — kareyi kendimiz çevirip köşeleri
- * geri eşleriz (x' = width − x).
+ * Mirroring: the marker is embedded in the bottom face, so the camera sees it MIRRORED.
+ * detectInvertedMarker handles polarity but NOT mirroring (a mirrored pattern
+ * maps to a different/invalid code in the dictionary) — so we flip the frame
+ * ourselves and map the corners back (x' = width − x).
  */
 
 import type { DetectedMarker } from './aruco-scanner'
@@ -35,7 +35,7 @@ let _loadStarted = false
 let _loadFailed = false
 let _detector: any = null
 
-const LOAD_TIMEOUT_MS = 60_000 // 13MB script + wasm derleme — yavaş ağda cömert davran
+const LOAD_TIMEOUT_MS = 60_000 // 13 MB script + wasm compile — be generous on slow networks
 
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -45,12 +45,12 @@ function loadScript(src: string): Promise<void> {
     s.src = src
     s.async = true
     s.onload  = () => resolve()
-    s.onerror = () => reject(new Error(`Script yüklenemedi: ${src}`))
+    s.onerror = () => reject(new Error(`Failed to load script: ${src}`))
     document.head.appendChild(s)
   })
 }
 
-/** OpenCV yüklemesini başlat (idempotent, arka plan). */
+/** Start loading OpenCV (idempotent, in the background). */
 export function preloadOpenCV(): void {
   if (_loadStarted) return
   _loadStarted = true
@@ -59,12 +59,12 @@ export function preloadOpenCV(): void {
       const base = import.meta.env.BASE_URL
       await loadScript(`${base}opencv/opencv.js`)
 
-      // UMD, window.cv'yi bırakır. Sürüme göre üç olası durum:
-      // 1) thenable (emscripten Promise-benzeri) → await
-      // 2) onRuntimeInitialized callback bekleyen modül
-      // 3) çoktan hazır (cv.Mat mevcut)
+      // The UMD build leaves window.cv behind. Depending on the version, three cases:
+      // 1) thenable (emscripten Promise-like) → await
+      // 2) a module waiting for the onRuntimeInitialized callback
+      // 3) already ready (cv.Mat exists)
       const raw: any = (window as any).cv
-      if (!raw) throw new Error('window.cv oluşmadı')
+      if (!raw) throw new Error('window.cv was not created')
 
       const cv = await Promise.race([
         (async () => {
@@ -75,31 +75,31 @@ export function preloadOpenCV(): void {
           })
         })(),
         new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error('OpenCV runtime zaman aşımı')), LOAD_TIMEOUT_MS)
+          setTimeout(() => rej(new Error('OpenCV runtime initialisation timed out')), LOAD_TIMEOUT_MS)
         ),
       ])
 
-      if (!cv?.Mat) throw new Error('OpenCV runtime eksik (cv.Mat yok)')
+      if (!cv?.Mat) throw new Error('OpenCV runtime incomplete (cv.Mat missing)')
       _cv = cv
     } catch (e) {
       _loadFailed = true
-      console.warn('[aruco] OpenCV yüklenemedi — js-aruco2 fallback aktif:', e)
+      console.warn('[aruco] OpenCV failed to load — js-aruco2 fallback active:', e)
     }
   })()
 }
 
 /**
- * ÖZEL sözlüğü cv.aruco_Dictionary olarak kur.
+ * Build our CUSTOM dictionary as a cv.aruco_Dictionary.
  *
- * DİKKAT: Bizim sözlük OpenCV'nin hazır DICT_4X4_50'si DEĞİL —
- * ARUCO_4X4_1000'den max-min Hamming ile seçilip 0-49'a yeniden
- * numaralanmış özel 50'lik (aruco_dict_4x4_50.json, 6×6, 1=SİYAH).
- * Hazır sözlük kullanılsaydı ID'ler basılı parçalarla uyuşmazdı.
+ * CAUTION: our dictionary is NOT OpenCV's built-in DICT_4X4_50 — it is a
+ * custom set of 50 codes selected from ARUCO_4X4_1000 by max-min Hamming
+ * distance and renumbered 0–49 (aruco_dict_4x4_50.json, 6×6, 1=BLACK).
+ * With the built-in dictionary the IDs would not match the printed parts.
  *
- * OpenCV 5 bytesList düzeni (empirik doğrulandı, node testi):
- *   Mat CV_8UC4, rows=N, cols=ceil(bits/8)=2; satır başına 8 bayt:
+ * OpenCV 5 bytesList layout (verified empirically with a Node test):
+ *   Mat CV_8UC4, rows=N, cols=ceil(bits/8)=2; 8 bytes per row:
  *   [rot0_b0, rot0_b1, rotCCW_b0, rotCCW_b1, rot180_..., rotCW_...]
- *   Baytlar MSB-first, bit=1 → BEYAZ hücre (JSON'un tersi).
+ *   Bytes are MSB-first, bit=1 → WHITE cell (the inverse of the JSON).
  */
 function buildCustomDictionary(cv: any): any {
   const rotCCW = (b: number[][]) => {
@@ -120,7 +120,7 @@ function buildCustomDictionary(cv: any): any {
   const data = new Uint8Array(N * 8)
   for (let id = 0; id < N; id++) {
     const b6 = arucoDict[id] as number[][]
-    // iç 4×4, 1=beyaz (JSON 1=siyah → ters çevir)
+    // inner 4×4, 1=white (JSON uses 1=black → invert)
     let cur: number[][] = []
     for (let r = 1; r < 5; r++) {
       const row: number[] = []
@@ -135,11 +135,11 @@ function buildCustomDictionary(cv: any): any {
     }
   }
   const bytesList = cv.matFromArray(N, 2, cv.CV_8UC4, Array.from(data))
-  // maxCorrectionBits=1: sözlüğümüzün min Hamming mesafesi 4 → 1 bit güvenli
+  // maxCorrectionBits=1: our dictionary's minimum Hamming distance is 4 → 1 bit is safe
   return new cv.aruco_Dictionary(bytesList, 4, 1)
 }
 
-/** Hazırsa detektörü döndürür; değilse null (bloklamaz — fallback devrede). */
+/** Returns the detector if ready; otherwise null (non-blocking — the fallback takes over). */
 function getDetectorIfReady(): any | null {
   if (_detector) return _detector
   if (!_cv) { preloadOpenCV(); return null }
@@ -147,18 +147,18 @@ function getDetectorIfReady(): any | null {
     const cv = _cv
     const dict = buildCustomDictionary(cv)
     const params = new cv.aruco_DetectorParameters()
-    // Düşük kontrastlı gravür için ayarlar:
-    params.detectInvertedMarker = true   // ters polarite motor içinde
-    params.adaptiveThreshConstant = 5    // varsayılan 7 → zayıf gölgede daha duyarlı
-    // minMarkerPerimeterRate varsayılanda (0.03) bırakıldı: 0.02 dokulu arka
-    // planlarda (ahşap masa vb.) sahte kare oranını gözle görülür artırıyordu
+    // Settings for low-contrast engravings:
+    params.detectInvertedMarker = true   // inverted polarity handled inside the engine
+    params.adaptiveThreshConstant = 5    // default 7 → more sensitive in weak shadows
+    // minMarkerPerimeterRate left at its default (0.03): 0.02 noticeably increased
+    // false squares on textured backgrounds (wooden desks etc.)
     params.cornerRefinementMethod = cv.CORNER_REFINE_SUBPIX ?? 1
     const refine = new cv.aruco_RefineParameters(10, 3, true)
     _detector = new cv.aruco_ArucoDetector(dict, params, refine)
     return _detector
   } catch (e) {
     _loadFailed = true
-    console.warn('[aruco] OpenCV detektörü kurulamadı — js-aruco2 fallback aktif:', e)
+    console.warn('[aruco] Could not set up the OpenCV detector — js-aruco2 fallback active:', e)
     return null
   }
 }
@@ -167,14 +167,14 @@ export function isOpenCVFailed(): boolean {
   return _loadFailed
 }
 
-/** UI göstergesi için motor durumu. */
+/** Engine status for the UI indicator. */
 export function openCVStatus(): 'loading' | 'ready' | 'failed' {
   if (_loadFailed) return 'failed'
   if (_cv) return 'ready'
   return 'loading'
 }
 
-/** MatVector köşelerini DetectedMarker[]'a çevir. */
+/** Convert MatVector corners to DetectedMarker[]. */
 function extractMarkers(corners: any, ids: any): DetectedMarker[] {
   const out: DetectedMarker[] = []
   for (let i = 0; i < ids.rows; i++) {
@@ -193,16 +193,16 @@ function extractMarkers(corners: any, ids: any): DetectedMarker[] {
 }
 
 /**
- * OpenCV ile tespit. Hazır değilse/başarısızsa null döner (→ js-aruco2
- * fallback). Varyantlar: {ham, CLAHE} × {ayna, düz}. Polarite motor içinde.
+ * Detect with OpenCV. Returns null if not ready or on failure (→ js-aruco2
+ * fallback). Variants: {raw, CLAHE} × {mirrored, normal}. Polarity is handled inside the engine.
  *
- * ADAY BİRLEŞTİRME — erken dönüş YOK: dokulu arka planlar (ahşap masa vb.)
- * sahte kare üretebilir; ilk bulunanla dönmek gerçek markerı (başka
- * varyant/yönde çıkacak olanı) bastırır ve yanlış ID kilidi engelleyip
- * fallback'i de susturur. Bunun yerine 4 geçişin TÜM sonuçları toplanır,
- * ID bazında tekilleştirilir; seçim üst katmanda (ScannerPage, kayıtlı-ID
- * filtresi) yapılır. AYNA ÖNCE listelenir: fiziksel markerlar alt yüzeye
- * gömülü olduğundan kamera onları her zaman aynalı görür — beklenen yön bu.
+ * CANDIDATE MERGING — NO early return: textured backgrounds (wooden desks etc.)
+ * can produce false squares; returning the first hit would suppress the real marker
+ * (the one found in another variant/orientation), and by blocking a wrong-ID lock
+ * it would also silence the fallback. Instead, ALL results of the 4 passes are
+ * collected and de-duplicated by ID; the choice is made one level up (ScannerPage,
+ * registered-ID filter). MIRRORED results are listed FIRST: physical markers are
+ * embedded in the bottom face, so the camera always sees them mirrored — that is the expected case.
  */
 export function detectWithOpenCV(imageData: ImageData): DetectedMarker[] | null {
   const det = getDetectorIfReady()
@@ -215,7 +215,7 @@ export function detectWithOpenCV(imageData: ImageData): DetectedMarker[] | null 
     gray = new cv.Mat()
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
 
-    // CLAHE varyantı — yerel kontrast (tek renk gravür gölgeleri için)
+    // CLAHE variant — local contrast (for shadows in single-colour engravings)
     const makeClahe = () => {
       if (claheMat) return claheMat
       claheMat = new cv.Mat()
@@ -236,7 +236,7 @@ export function detectWithOpenCV(imageData: ImageData): DetectedMarker[] | null 
     for (const variant of [() => gray, makeClahe]) {
       const mat = variant()
 
-      // a. Aynalı ÖNCE — köşeleri ham kare uzayına geri eşle (x' = w − x)
+      // a. Mirrored FIRST — map corners back to the raw frame space (x' = w − x)
       if (!flipped) flipped = new cv.Mat()
       cv.flip(mat, flipped, 1)
       push(runDetect(cv, det, flipped).map(m => ({
@@ -244,12 +244,12 @@ export function detectWithOpenCV(imageData: ImageData): DetectedMarker[] | null 
         corners: m.corners.map(c => ({ x: imageData.width - c.x, y: c.y })),
       })))
 
-      // b. Düz
+      // b. Normal
       push(runDetect(cv, det, mat))
     }
     return found
   } catch {
-    return null // hata → fallback'e bırak
+    return null // error → leave it to the fallback
   } finally {
     src?.delete(); gray?.delete(); claheMat?.delete(); flipped?.delete()
   }

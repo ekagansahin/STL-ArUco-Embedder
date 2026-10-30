@@ -1,7 +1,15 @@
 {
-  "name": "web",
+  "name": "stl-aruco-embedder",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Browser-based PWA that embeds ArUco markers into STL files and identifies printed parts with a webcam — fully offline.",
+  "author": "ekagansahin",
+  "license": "MIT",
+  "homepage": "https://ekagansahin.github.io/STL-ArUco-Embedder/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ekagansahin/STL-ArUco-Embedder.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

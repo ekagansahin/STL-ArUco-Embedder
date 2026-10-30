@@ -1,7 +1,7 @@
 /**
- * Kamera tarayıcı sayfası.
- * js-aruco2 ile tarayıcı taraflı ARUCO_4X4_50 tespiti yapar.
- * Telefon arka kamerasını (facingMode: environment) otomatik tercih eder.
+ * Camera scanner page.
+ * Browser-side ARUCO_4X4_50 detection (OpenCV.js primary, js-aruco2 fallback).
+ * Prefers a rear-facing camera (facingMode: environment) when one is available.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -14,62 +14,62 @@ interface ScannerPageProps {
   lang: 'TR' | 'EN'
 }
 
-// ── Kare-bazlı oylama — zaman kademeli ──────────────────────────────────────
-// İlk RELAX_AFTER_MS boyunca SIKI eşikle (yüksek güven) kilit ararız. O sürede
-// bulunamazsa GEVŞEK eşiğe düşer, denemeye devam ederiz. Toplam GIVEUP_AFTER_MS
-// dolduğunda hâlâ kilit yoksa "bulunamadı" gösterilir.
-// Not: her eşik "son N karenin en az M'i" demek. Tampon en büyük pencere kadar
-// tutulur; sayım o anki fazın penceresi üzerinden yapılır.
+// ── Per-frame voting — time-tiered ──────────────────────────────────────────
+// For the first RELAX_AFTER_MS we look for a lock with a STRICT threshold (high confidence).
+// If nothing is found in that time, we drop to the RELAXED threshold and keep trying.
+// If there is still no lock once GIVEUP_AFTER_MS has passed, "not found" is shown.
+// Note: each threshold means "at least M of the last N frames". The buffer is kept as
+// long as the largest window; counting uses the current phase's window.
 const VOTE_STRICT   = { window: 7, min: 4 }
 const VOTE_RELAXED  = { window: 4, min: 2 }
-const RELAX_AFTER_MS  = 3000   // 3 sn sonra gevşe
-const GIVEUP_AFTER_MS = 15000  // 15 sn sonra bulunamadı
+const RELAX_AFTER_MS  = 3000   // relax after 3 s
+const GIVEUP_AFTER_MS = 15000  // give up after 15 s
 
-// Tespit hızı sınırı: RAF 60fps çalışır ama tespit (özellikle OpenCV +
-// varyant matrisi) her karede gerekmez; ~10fps yeterli ve ana iş parçacığını
-// rahatlatır — video ve overlay akıcı kalır.
+// Detection rate limit: RAF runs at 60 fps, but detection (especially OpenCV +
+// the variant matrix) isn't needed on every frame; ~10 fps is enough and frees
+// the main thread — the video and overlay stay smooth.
 const MIN_DETECT_INTERVAL_MS = 100
 
-// ROI takibi: marker bulununca bbox bu çarpanla genişletilip sonraki
-// karelerde önce yalnız o bölge taranır. Üst üste bu kadar kaçırmada tam
-// kareye dönülür.
+// ROI tracking: once a marker is found, its bbox is expanded by this factor and
+// only that region is scanned first in the following frames. After this many
+// consecutive misses we go back to the full frame.
 const ROI_EXPAND = 1.8
 const ROI_MAX_MISSES = 10
 
-// Bulanıklık: marker bu süredir yoksa ve Laplacian varyansı eşiğin
-// altındaysa "bulanık" ipucu gösterilir.
+// Blur: if no marker has been seen for this long and the Laplacian variance is
+// below the threshold, a "blurry" hint is shown.
 const BLUR_HINT_AFTER_MS = 2500
 const BLUR_THRESHOLD = 40
 
 export default function ScannerPage({ lang }: ScannerPageProps) {
   const videoRef   = useRef<HTMLVideoElement>(null)
-  const canvasRef  = useRef<HTMLCanvasElement>(null)   // gizli, frame okumak için
-  const overlayRef = useRef<HTMLCanvasElement>(null)   // görünür, köşe çizmek için
+  const canvasRef  = useRef<HTMLCanvasElement>(null)   // hidden, used to read frames
+  const overlayRef = useRef<HTMLCanvasElement>(null)   // visible, used to draw corners
   const streamRef  = useRef<MediaStream | null>(null)
   const rafRef     = useRef<number | null>(null)
-  // lastIdRef: RAF döngüsündeki stale closure sorununu önler.
-  // State (lastId) sadece UI render için; kontrol ref ile yapılır.
+  // lastIdRef: avoids the stale-closure problem in the RAF loop.
+  // The state (lastId) is only for UI rendering; checks use the ref.
   const lastIdRef  = useRef<number | null>(null)
-  // detectingRef: bir tespit devam ederken yenisini başlatma (ana iş parçacığı
-  // yığılmasını önler — video akıcı kalır).
+  // detectingRef: don't start a new detection while one is running (prevents
+  // main-thread pile-up — the video stays smooth).
   const detectingRef = useRef(false)
-  // recentIdsRef: son karelerin tespit ID'leri (tespit yoksa -1). Oylama için.
+  // recentIdsRef: detected IDs of the latest frames (-1 when none). Used for voting.
   const recentIdsRef = useRef<number[]>([])
-  // allowedIdsRef: DB'de kayıtlı marker ID'leri. Yalnızca bu kümedeki ID'ler
-  // kabul edilir — yoğun sözlükte "1" yerine "136" gibi kayıp okumalar (kayıtlı
-  // olmadıkları için) reddedilir. Küme boşsa (hiç parça yok) filtre uygulanmaz.
+  // allowedIdsRef: marker IDs registered in the DB. Only IDs in this set are
+  // accepted — misreads such as "136" instead of "1" in a dense dictionary are
+  // rejected (because they aren't registered). If the set is empty (no parts), no filter is applied.
   const allowedIdsRef = useRef<Set<number>>(new Set())
-  // scanStartRef: bu tarama turunun başlangıç zamanı (performance.now).
+  // scanStartRef: start time of this scan round (performance.now).
   const scanStartRef = useRef(0)
-  // scanTimedOutRef: 15 sn doldu ve kilit yok → RAF döngüsündeki stale closure
-  // sorununu önlemek için ref (state ile birlikte tutulur).
+  // scanTimedOutRef: 15 s passed with no lock → kept as a ref (alongside the state)
+  // to avoid the stale-closure problem in the RAF loop.
   const scanTimedOutRef = useRef(false)
-  // roiRef: son başarılı tespitin genişletilmiş bbox'ı — sonraki karelerde
-  // önce burası taranır (hızlı yol). misses ile tam kareye dönüş sayılır.
+  // roiRef: expanded bbox of the last successful detection — scanned first in
+  // the following frames (fast path). misses counts towards falling back to the full frame.
   const roiRef = useRef<(RoiHint & { misses: number }) | null>(null)
-  // lastDetectAtRef: tespit hız sınırı (MIN_DETECT_INTERVAL_MS)
+  // lastDetectAtRef: detection rate limit (MIN_DETECT_INTERVAL_MS)
   const lastDetectAtRef = useRef(0)
-  // blurCounterRef: keskinlik ölçümü her karede değil, seyrek yapılır
+  // blurCounterRef: sharpness is measured occasionally, not on every frame
   const blurCounterRef = useRef(0)
 
   const [cameraActive, setCameraActive] = useState(false)
@@ -140,7 +140,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         zoomLabel:  'Zoom',
       }
 
-  // ─── Kamera ────────────────────────────────────────────────────────────────
+  // ─── Camera ────────────────────────────────────────────────────────────────
 
   const startCamera = async () => {
     setCameraError(null)
@@ -148,7 +148,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     setLastId(null)
     lastIdRef.current = null
     recentIdsRef.current = []
-    // Kayıtlı marker ID'lerini DB'den çek — yalnızca bunlar kabul edilecek
+    // Fetch the registered marker IDs from the DB — only these will be accepted
     try {
       const parts = await getAllParts()
       allowedIdsRef.current = new Set(parts.map((p) => p.markerId))
@@ -156,9 +156,9 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       allowedIdsRef.current = new Set()
     }
     try {
-      // 1080p iste: OpenCV yolu yüksek çözünürlüğü kaldırıyor ve küçük
-      // (10mm) markerlarda hücre başına piksel kritik. Kamera veremezse
-      // tarayıcı en yakın modu seçer.
+      // Ask for 1080p: the OpenCV path handles high resolution, and pixels per
+      // cell are critical for small (10 mm) markers. If the camera can't deliver,
+      // the browser picks the closest mode.
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
@@ -169,13 +169,13 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       }
       streamRef.current = stream
 
-      // ── Kamera yetenekleri: sürekli odak + torch + zoom ──
-      // Standart TS tipleri torch/zoom/focusMode içermez → any.
+      // ── Camera capabilities: continuous focus + torch + zoom ──
+      // The standard TS types don't include torch/zoom/focusMode → any.
       const track = stream.getVideoTracks()[0] as any
       try {
         const caps = track.getCapabilities?.() ?? {}
-        // Sürekli otomatik odak — yakın mesafede netlik için (destekleyen
-        // kameralarda; başarısızlık sessizce yutulur)
+        // Continuous autofocus — for sharpness at close range (on cameras that
+        // support it; failures are silently ignored)
         if (Array.isArray(caps.focusMode) && caps.focusMode.includes('continuous')) {
           track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {})
         }
@@ -187,9 +187,9 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         } else {
           setZoomCaps(null)
         }
-      } catch { /* yetenek okunamadı — kontroller gizli kalır */ }
+      } catch { /* capabilities unreadable — the controls stay hidden */ }
 
-      // Tarama saatini kamera hazır olduğunda başlat
+      // Start the scan clock once the camera is ready
       scanStartRef.current = performance.now()
       scanTimedOutRef.current = false
       roiRef.current = null
@@ -202,17 +202,17 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     }
   }
 
-  /** Torch (fener) aç/kapa — destekleyen kameralarda. */
+  /** Toggle the torch — on cameras that support it. */
   const toggleTorch = async () => {
     const track = streamRef.current?.getVideoTracks()[0] as any
     if (!track) return
     try {
       await track.applyConstraints({ advanced: [{ torch: !torchOn }] })
       setTorchOn(v => !v)
-    } catch { /* desteklenmiyor */ }
+    } catch { /* not supported */ }
   }
 
-  /** Optik/dijital zoom uygula — destekleyen kameralarda. */
+  /** Apply optical/digital zoom — on cameras that support it. */
   const applyZoom = (v: number) => {
     setZoom(v)
     const track = streamRef.current?.getVideoTracks()[0] as any
@@ -227,7 +227,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     streamRef.current?.getTracks().forEach((tr) => tr.stop())
     streamRef.current = null
     if (videoRef.current) videoRef.current.srcObject = null
-    // Overlay'i temizle
+    // Clear the overlay
     const ol = overlayRef.current
     if (ol) ol.getContext('2d')?.clearRect(0, 0, ol.width, ol.height)
     recentIdsRef.current = []
@@ -242,15 +242,15 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     setScanning(false)
   }, [])
 
-  // Sayfa mount olunca aruco scriptlerini ön-yükle.
-  // Yükleme başarısız olursa (örn. script 404) sessiz kalma — UI'da bildir.
+  // Preload the aruco scripts when the page mounts.
+  // If loading fails (e.g. a script 404s), don't fail silently — report it in the UI.
   useEffect(() => {
     preloadAruco()
       .then(() => setEngineError(null))
       .catch((e) => setEngineError(String(e?.message ?? e)))
   }, [])
 
-  // OpenCV motor durumunu izle (yükleme arka planda sürer) — chip için.
+  // Track the OpenCV engine status (loading continues in the background) — for the chip.
   useEffect(() => {
     if (openCVStatus() !== 'loading') { setCvStatus(openCVStatus()); return }
     const iv = setInterval(() => {
@@ -261,13 +261,13 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     return () => clearInterval(iv)
   }, [])
 
-  // Kamera durduğunda temizle
+  // Clean up when the camera stops
   useEffect(() => () => stopCamera(), [stopCamera])
 
-  // ─── Tespit döngüsü ────────────────────────────────────────────────────────
+  // ─── Detection loop ────────────────────────────────────────────────────────
 
   const handleDetection = useCallback(async (id: number) => {
-    if (id === lastIdRef.current) return  // aynı ID tekrar gelince atla — ref ile stale closure yok
+    if (id === lastIdRef.current) return  // skip when the same ID arrives again — the ref avoids stale closures
     lastIdRef.current = id
     setLastId(id)
     setScanning(false)
@@ -291,8 +291,8 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       return
     }
 
-    // Bir önceki tespit sürüyorsa, hız sınırına takıldıysak VEYA zaman
-    // aşımına düşüldüyse bu kareyi atla
+    // Skip this frame if the previous detection is still running, if we hit the
+    // rate limit, OR if the scan has timed out
     const now = performance.now()
     if (
       !detectingRef.current &&
@@ -308,21 +308,21 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       ctx.drawImage(video, 0, 0, w, h)
       const imageData = ctx.getImageData(0, 0, w, h)
 
-      // ROI ipucu: önceki karede marker bulunduysa önce o bölge taranır
+      // ROI hint: if a marker was found in the previous frame, that region is scanned first
       const roi = roiRef.current
 
-      // Async detection — RAF döngüsü bloklanmaz
+      // Async detection — the RAF loop isn't blocked
       detectMarkers(imageData, roi).then((markers) => {
-        // ── Aday seçimi ──
-        // Motor artık TÜM adayları döndürür (ayna+düz, tüm varyantlar).
-        // Dokulu arka plan sahte kare üretebilir; kayıtlı bir ID varsa onu
-        // tercih et — sahte aday gerçek markerı gölgeleyemesin.
+        // ── Candidate selection ──
+        // The engine now returns ALL candidates (mirrored + normal, all variants).
+        // A textured background can produce false squares; if a registered ID is
+        // present, prefer it — so a false candidate can't shadow the real marker.
         const allowedSet = allowedIdsRef.current
         const chosen =
           markers.find(m => allowedSet.size === 0 || allowedSet.has(m.id)) ??
           markers[0] ?? null
 
-        // ── ROI takibini güncelle ──
+        // ── Update ROI tracking ──
         if (chosen) {
           const xs = chosen.corners.map(c => c.x)
           const ys = chosen.corners.map(c => c.y)
@@ -338,9 +338,9 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           if (roiRef.current.misses > ROI_MAX_MISSES) roiRef.current = null
         }
 
-        // ── Bulanıklık ipucu ──
-        // Marker bir süredir yoksa arada bir keskinliğe bak (her ~15 tespit);
-        // düşükse kullanıcıya odak mesafesi ipucu göster.
+        // ── Blur hint ──
+        // If no marker has been seen for a while, check sharpness now and then (every ~15
+        // detections); if it's low, show the user a focus-distance hint.
         if (!chosen && lastIdRef.current === null) {
           const elapsed = performance.now() - scanStartRef.current
           if (elapsed > BLUR_HINT_AFTER_MS && ++blurCounterRef.current >= 15) {
@@ -348,28 +348,28 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
             setBlurry(estimateSharpness(imageData) < BLUR_THRESHOLD)
           }
         }
-        // Overlay boyutunu video ile eşitle
+        // Match the overlay size to the video
         if (overlay && (overlay.width !== w || overlay.height !== h)) {
           overlay.width  = w
           overlay.height = h
         }
 
-        // ── Kayıtlı ID filtresi ──
-        // rawId: seçilen adayın ID'si. Yalnızca DB'de kayıtlı ID'ler geçerli
-        // (küme boşsa filtre yok → hepsi geçerli). Kayıtlı olmayan okumalar
-        // tampona -1 olarak girer, hiç sayılmaz.
+        // ── Registered-ID filter ──
+        // rawId: the chosen candidate's ID. Only IDs registered in the DB are valid
+        // (empty set → no filter, everything is valid). Unregistered reads enter
+        // the buffer as -1 and are never counted.
         const allowed = allowedSet
         const rawId = chosen ? chosen.id : -1
         const accepted = rawId >= 0 && (allowed.size === 0 || allowed.has(rawId))
 
-        // ── Oylama tamponunu güncelle ──
-        // Tampon en büyük pencere (sıkı faz) kadar tutulur; sayım aktif fazın
-        // penceresi üzerinden yapılır.
+        // ── Update the voting buffer ──
+        // The buffer is kept as long as the largest window (strict phase); counting
+        // uses the active phase's window.
         const buf = recentIdsRef.current
         buf.push(accepted ? rawId : -1)
         if (buf.length > VOTE_STRICT.window) buf.shift()
 
-        // Zaten kilitli miyiz? (onaylanmış tespit varsa kutu yeşil, yoksa sarı=aday)
+        // Already locked? (box is green for a confirmed detection, otherwise yellow = candidate)
         const confirmed = lastIdRef.current !== null
 
         if (overlay) {
@@ -378,11 +378,11 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
 
           if (chosen) {
             const m = chosen
-            // Video CSS ile yatay aynalanıyor (doğal kontrol için). Köşeler ham
-            // kare uzayında geldiğinden, aynalı video ile hizalamak için x'i çevir.
-            // Metin overlay aynalanmadığından okunur kalır.
+            // The video is mirrored horizontally via CSS (for natural control). Corners
+            // arrive in raw frame space, so flip x to line up with the mirrored video.
+            // The text overlay is not mirrored, so it stays readable.
             const fx = (x: number) => w - x
-            // Yeşil: onaylı · Sarı: geçerli aday · Kırmızı: kayıtlı değil (reddedildi)
+            // Green: confirmed · Yellow: valid candidate · Red: not registered (rejected)
             const color = confirmed ? '#22c55e' : accepted ? '#eab308' : '#ef4444'
             octx.strokeStyle = color
             octx.lineWidth   = Math.max(2, w / 200)
@@ -394,25 +394,25 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
             octx.closePath()
             octx.stroke()
 
-            // ID etiketi
+            // ID label
             octx.fillStyle = color
             octx.font      = `bold ${Math.max(14, w / 40)}px monospace`
             octx.fillText(`ID: ${m.id}`, fx(m.corners[0].x) + 4, m.corners[0].y - 6)
           }
         }
 
-        // ── Kilitleme / zaman aşımı kararı ──
-        // Yalnızca henüz kilitli değilken çalışır.
+        // ── Lock / timeout decision ──
+        // Only runs while not yet locked.
         if (lastIdRef.current === null && !scanTimedOutRef.current) {
           const elapsed = performance.now() - scanStartRef.current
 
           if (elapsed >= GIVEUP_AFTER_MS) {
-            // 15 sn doldu, hâlâ kilit yok → bulunamadı
+            // 15 s passed and still no lock → not found
             scanTimedOutRef.current = true
             setScanTimedOut(true)
             setScanning(false)
           } else {
-            // İlk RELAX_AFTER_MS sıkı (7/4), sonrası gevşek (4/2)
+            // Strict for the first RELAX_AFTER_MS (4 of 7), relaxed afterwards (2 of 4)
             const phase = elapsed < RELAX_AFTER_MS ? VOTE_STRICT : VOTE_RELAXED
             const recent = buf.slice(Math.max(0, buf.length - phase.window))
             const counts = new Map<number, number>()
@@ -437,7 +437,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     rafRef.current = requestAnimationFrame(detectionLoop)
   }, [handleDetection])
 
-  // Kamera aktif olduğunda döngüyü başlat/durdur
+  // Start/stop the loop while the camera is active
   useEffect(() => {
     if (cameraActive) {
       setScanning(true)
@@ -456,7 +456,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     }
   }, [cameraActive, detectionLoop])
 
-  // ─── Yeni tarama ───────────────────────────────────────────────────────────
+  // ─── New scan ──────────────────────────────────────────────────────────────
 
   const resetScan = () => {
     lastIdRef.current = null
@@ -470,7 +470,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
     setFoundPart(undefined)
     setLastId(null)
     setScanning(true)
-    // Overlay temizle
+    // Clear the overlay
     const ol = overlayRef.current
     if (ol) ol.getContext('2d')?.clearRect(0, 0, ol.width, ol.height)
   }
@@ -482,14 +482,14 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
       <h2 className="text-lg font-semibold text-neutral-100">{t.title}</h2>
       <p className="text-sm text-neutral-500">{t.desc}</p>
 
-      {/* Motor yükleme hatası — sessiz başarısızlığı görünür kıl */}
+      {/* Engine load error — make a silent failure visible */}
       {engineError && (
         <div className="text-sm px-4 py-2.5 rounded-xl border bg-red-950/40 border-red-900 text-red-400">
           {t.engineError} <span className="font-mono text-xs">{engineError}</span>
         </div>
       )}
 
-      {/* Gelişmiş motor (OpenCV) durumu */}
+      {/* Advanced engine (OpenCV) status */}
       <div className="flex items-center gap-2 text-xs">
         <span className={`w-2 h-2 rounded-full ${
           cvStatus === 'ready' ? 'bg-green-400' : cvStatus === 'loading' ? 'bg-yellow-400 animate-pulse' : 'bg-neutral-500'
@@ -509,17 +509,17 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           playsInline
           muted
           className="w-full h-full object-cover"
-          style={{ transform: 'scaleX(-1)' }}  /* doğal ayna görünümü — kontrol kolaylığı */
+          style={{ transform: 'scaleX(-1)' }}  /* natural mirror view — easier to control */
         />
 
-        {/* Tespit köşelerini çizen overlay canvas */}
+        {/* Overlay canvas that draws the detected corners */}
         <canvas
           ref={overlayRef}
           className="absolute inset-0 w-full h-full pointer-events-none"
           style={{ objectFit: 'cover' }}
         />
 
-        {/* Hedef kutu (sadece taranıyor durumunda ve henüz tespit yokken) */}
+        {/* Target box (only while scanning and before any detection) */}
         {cameraActive && scanning && foundPart === undefined && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none gap-2">
             <div className="w-44 h-44 border-2 border-yellow-400 rounded-lg" />
@@ -527,14 +527,14 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
           </div>
         )}
 
-        {/* Kamera kapalı */}
+        {/* Camera off */}
         {!cameraActive && (
           <div className="absolute inset-0 flex items-center justify-center text-neutral-600 text-sm">
             {cameraError ?? t.camOff}
           </div>
         )}
 
-        {/* Taranıyor göstergesi */}
+        {/* Scanning indicator */}
         {cameraActive && scanning && foundPart === undefined && (
           <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-black/60 rounded-full px-3 py-1">
             <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
@@ -543,10 +543,10 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         )}
       </div>
 
-      {/* Gizli frame canvas */}
+      {/* Hidden frame canvas */}
       <canvas ref={canvasRef} className="hidden" />
 
-      {/* Kontrol butonları */}
+      {/* Control buttons */}
       <div className="flex gap-3 flex-wrap">
         {!cameraActive ? (
           <button
@@ -599,14 +599,14 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         )}
       </div>
 
-      {/* Bulanıklık ipucu */}
+      {/* Blur hint */}
       {cameraActive && blurry && lastId === null && !scanTimedOut && (
         <div className="text-sm px-4 py-2.5 rounded-xl border bg-sky-950/40 border-sky-900 text-sky-300">
           {t.blurryHint}
         </div>
       )}
 
-      {/* Zaman aşımı — 15 sn'de kilit yok */}
+      {/* Timeout — no lock within 15 s */}
       {scanTimedOut && (
         <div className="bg-neutral-900 border border-amber-900 rounded-xl p-4 space-y-3">
           <p className="text-amber-400 text-sm">{t.timeout}</p>
@@ -619,7 +619,7 @@ export default function ScannerPage({ lang }: ScannerPageProps) {
         </div>
       )}
 
-      {/* Tespit sonucu */}
+      {/* Detection result */}
       {lastId !== null && (
         <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 space-y-3">
           <p className="text-xs text-neutral-500 uppercase tracking-wider">
